@@ -125,6 +125,7 @@ email-triage-rl/
 ```
 OR 
 
+```
 ├── 📝 models.py          ← Type-safe contracts
 │                           (Action, Observation, State)
 │
@@ -135,8 +136,8 @@ OR
     ├── environment.py    ← Game/simulation logic
     ├── app.py            ← FastAPI server
     └── Dockerfile        ← Container definition
+```
 
-    
 
 ---
 
