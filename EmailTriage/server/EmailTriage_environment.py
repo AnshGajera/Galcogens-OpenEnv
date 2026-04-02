@@ -69,6 +69,7 @@ class EmailtriageEnvironment(Environment):
         ]
         self._emails: List[EmailtriageEnvironment._EmailItem] = []
         self._last_read_payload: List[str] = []
+        self._triggered_events: set[str] = set()
 
     def reset(self) -> EmailtriageObservation:
         """Reset the environment and return the first inbox observation."""
@@ -82,6 +83,7 @@ class EmailtriageEnvironment(Environment):
         )
         self._history = []
         self._last_read_payload = []
+        self._triggered_events = set()
         self._last_action_result = (
             "Environment reset. Start triaging the inbox."
         )
@@ -103,7 +105,20 @@ class EmailtriageEnvironment(Environment):
             )
             return self._build_observation(reward=0.0, done=True)
 
+        processed_before = len(self._state.processed_email_ids)
         reward, feedback = self._route_action(action)
+        event_feedback = self._apply_dynamic_events()
+        processed_after = len(self._state.processed_email_ids)
+
+        # Reward concrete progress to produce smoother gradients for RL.
+        if processed_after > processed_before:
+            reward += 0.12
+            feedback = f"{feedback} Progress made on inbox coverage."
+
+        if event_feedback:
+            feedback = f"{feedback} {event_feedback}"
+
+        reward = self._clamp_reward(reward)
         self._last_action_result = feedback
         self._sync_state_inbox()
 
@@ -120,6 +135,7 @@ class EmailtriageEnvironment(Environment):
         )
 
         if done and self._is_all_processed():
+            reward = self._clamp_reward(reward + 0.1)
             self._last_action_result = "Inbox triage complete."
 
         return self._build_observation(reward=reward, done=done)
@@ -287,13 +303,22 @@ class EmailtriageEnvironment(Environment):
     def _route_action(self, action: EmailtriageAction) -> tuple[float, str]:
         """Route action to task logic and compute reward in [0, 1]."""
         if action.action_type == "query_calendar":
-            self._state.queried_calendar = True
-            pending_scheduling = any(
-                email.status == "unread" and email.requires_slot
+            pending_scheduling_count = sum(
+                1
                 for email in self._emails
+                if email.status == "unread" and email.requires_slot
             )
-            reward = 0.25 + (0.2 if pending_scheduling else 0.0)
-            return min(1.0, reward), "Calendar queried successfully."
+            self._state.queried_calendar = True
+            reward = 0.1 + min(0.36, pending_scheduling_count * 0.18)
+            if "calendar_queried_once" in self._triggered_events:
+                reward *= 0.7
+                feedback = (
+                    "Calendar queried again; small value after first lookup."
+                )
+            else:
+                self._triggered_events.add("calendar_queried_once")
+                feedback = "Calendar queried successfully."
+            return self._clamp_reward(reward), feedback
 
         target = self._find_email(action.target_email_id)
         if target is None:
@@ -306,7 +331,13 @@ class EmailtriageEnvironment(Environment):
                     f"{target.subject} | {target.body}"
                 )
             ]
-            reward = 0.15 if target.status == "unread" else 0.05
+            priority_bonus = {
+                "high": 0.18,
+                "medium": 0.12,
+                "low": 0.08,
+            }.get(target.priority, 0.1)
+            base_reward = 0.07 if target.status == "unread" else 0.02
+            reward = base_reward + priority_bonus
             return reward, "Email content returned to the agent."
 
         if action.action_type == "archive":
@@ -316,9 +347,20 @@ class EmailtriageEnvironment(Environment):
             if target.kind in {"spam", "newsletter", "notification"}:
                 target.status = "archived"
                 self._mark_processed(target.email_id)
-                return 0.8, "Correctly archived low-value email."
+                kind_bonus = {
+                    "spam": 0.18,
+                    "newsletter": 0.15,
+                    "notification": 0.12,
+                }.get(target.kind, 0.1)
+                return 0.62 + kind_bonus, "Correctly archived low-value email."
 
-            return 0.1, "Archived an email that likely needed a response."
+            penalty_like = 0.08
+            if target.priority == "high":
+                penalty_like = 0.03
+            return (
+                penalty_like,
+                "Archived an email that likely needed a response.",
+            )
 
         if action.action_type == "draft_email":
             return self._grade_draft_action(target, action)
@@ -332,7 +374,7 @@ class EmailtriageEnvironment(Environment):
         if target.status != "unread":
             return 0.05, "Email already processed."
 
-        reward = 0.2
+        reward = 0.15
         feedback_parts: List[str] = []
 
         if target.kind in {"meeting", "client_request", "escalation"}:
@@ -346,11 +388,11 @@ class EmailtriageEnvironment(Environment):
             )
 
         draft_quality = self._draft_quality_score(action.draft_content)
-        reward += 0.35 * draft_quality
+        reward += 0.4 * draft_quality
 
         if target.requires_slot:
             if self._state.queried_calendar:
-                reward += 0.15
+                reward += 0.12
                 feedback_parts.append(
                     "Checked calendar before proposing a slot."
                 )
@@ -360,16 +402,74 @@ class EmailtriageEnvironment(Environment):
                 )
 
             if action.proposed_slot in self._state.calendar_slots:
-                reward += 0.25
+                reward += 0.18
                 feedback_parts.append("Proposed a valid available slot.")
             else:
                 feedback_parts.append("Missing or invalid proposed slot.")
 
-        reward = max(0.0, min(1.0, reward))
+        if target.priority == "high":
+            reward += 0.08
+            feedback_parts.append("Handled high-priority thread.")
+
+        if (
+            target.kind == "escalation"
+            and "today" in action.draft_content.lower()
+        ):
+            reward += 0.05
+            feedback_parts.append("Draft included urgency acknowledgement.")
+
+        reward = self._clamp_reward(reward)
         if reward >= 0.55:
             target.status = "drafted"
             self._mark_processed(target.email_id)
         return reward, " ".join(feedback_parts)
+
+    def _apply_dynamic_events(self) -> str:
+        """Apply deterministic dynamic events that alter state mid-episode."""
+        if (
+            self._state.step_count == 3
+            and "new_urgent_email" not in self._triggered_events
+        ):
+            new_email = self._EmailItem(
+                email_id=max(email.email_id for email in self._emails) + 1,
+                sender="ceo@company.com",
+                subject="Urgent: board pre-read needed today",
+                body="Please draft a concise response with next steps.",
+                priority="high",
+                kind="escalation",
+                expected_action="draft_email",
+                status="unread",
+                requires_slot=False,
+            )
+            self._emails.append(new_email)
+            self._triggered_events.add("new_urgent_email")
+            return "Dynamic update: a new urgent email arrived."
+
+        unread_scheduling = [
+            email
+            for email in self._emails
+            if email.status == "unread" and email.requires_slot
+        ]
+        if (
+            self._state.step_count >= 4
+            and unread_scheduling
+            and len(self._state.calendar_slots) >= 2
+            and "calendar_slot_removed" not in self._triggered_events
+        ):
+            removed_slot = random.choice(self._state.calendar_slots)
+            self._state.calendar_slots.remove(removed_slot)
+            self._triggered_events.add("calendar_slot_removed")
+            return (
+                "Dynamic update: calendar changed and slot "
+                f"{removed_slot} is no longer available."
+            )
+
+        return ""
+
+    @staticmethod
+    def _clamp_reward(value: float) -> float:
+        """Clamp reward values to [0, 1]."""
+        return max(0.0, min(1.0, value))
 
     @staticmethod
     def _draft_quality_score(draft_content: str) -> float:

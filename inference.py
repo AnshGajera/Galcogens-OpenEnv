@@ -11,10 +11,10 @@ from EmailTriage import EmailtriageAction, EmailtriageEnv
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 API_KEY = os.getenv("HF_TOKEN")
-LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME", "EmailTriage-env:latest")
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME", "emailtriage-env:latest")
 TASK_NAME = "email-triage"
 BENCHMARK_NAME = "openenv-emailtriage"
-MAX_STEPS = 8
+MAX_STEPS = 12
 
 
 def log_start(task: str, env: str, model: str) -> None:
