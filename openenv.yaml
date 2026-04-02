@@ -1,0 +1,6 @@
+spec_version: 1
+name: EmailTriage
+type: space
+runtime: fastapi
+app: EmailTriage.server.app:app
+port: 8000
