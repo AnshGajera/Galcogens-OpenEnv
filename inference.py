@@ -10,7 +10,7 @@ from EmailTriage import EmailtriageAction, EmailtriageEnv
 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+API_KEY = os.getenv("HF_TOKEN")
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME", "EmailTriage-env:latest")
 TASK_NAME = "email-triage"
 BENCHMARK_NAME = "openenv-emailtriage"
@@ -119,7 +119,7 @@ def choose_action_with_llm(
 def main() -> None:
     if not API_KEY:
         raise RuntimeError(
-            "HF_TOKEN or API_KEY must be set in environment variables."
+            "HF_TOKEN must be set in environment variables."
         )
 
     llm_client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
