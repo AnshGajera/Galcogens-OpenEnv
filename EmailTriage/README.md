@@ -2,7 +2,7 @@
 title: EmailTriage Environment Server
 emoji: 📬
 colorFrom: blue
-colorTo: cyan
+colorTo: green
 sdk: docker
 pinned: false
 app_port: 8000
