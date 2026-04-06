@@ -6,7 +6,7 @@
 
 """Data models for the EmailTriage environment."""
 
-from typing import Dict, List, Literal
+from typing import Dict, List, Literal, Optional
 
 from openenv.core.env_server.types import Action, Observation, State
 from pydantic import Field
@@ -41,6 +41,10 @@ class EmailtriageAction(Action):
 class EmailtriageState(State):
     """Environment state stored between steps."""
 
+    task_id: str = Field(
+        default="hard",
+        description="Current task difficulty: easy, medium, or hard",
+    )
     inbox: List[Dict[str, str]] = Field(
         default_factory=list,
         description="In-memory inbox records with mutable status",

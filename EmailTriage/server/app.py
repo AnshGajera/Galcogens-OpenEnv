@@ -7,25 +7,12 @@
 """
 FastAPI application for the Emailtriage Environment.
 
-This module creates an HTTP server that exposes the EmailtriageEnvironment
-over HTTP and WebSocket endpoints, compatible with EnvClient.
-
 Endpoints:
-    - POST /reset: Reset the environment
+    - POST /reset: Reset the environment (accepts optional task_id)
     - POST /step: Execute an action
     - GET /state: Get current environment state
     - GET /schema: Get action/observation schemas
     - WS /ws: WebSocket endpoint for persistent sessions
-
-Usage:
-    # Development (with auto-reload):
-    uvicorn server.app:app --reload --host 0.0.0.0 --port 8000
-
-    # Production:
-    uvicorn server.app:app --host 0.0.0.0 --port 8000 --workers 4
-
-    # Or run directly:
-    python -m server.app
 """
 
 import argparse
@@ -63,7 +50,8 @@ app = create_app(
 # Keep docs metadata explicit to avoid generic duplicate naming in Swagger UI.
 app.title = "EmailTriage Environment API"
 app.description = (
-    "HTTP API for the dynamic EmailTriage OpenEnv environment."
+    "HTTP API for the dynamic EmailTriage OpenEnv environment "
+    "with 3 difficulty-graded tasks (easy, medium, hard)."
 )
 
 
@@ -110,12 +98,38 @@ def _metadata_payload() -> dict[str, Any]:
         "name": "EmailTriage",
         "description": (
             "Dynamic multi-turn email triage environment for OpenEnv "
-            "post-training and evaluation"
+            "post-training and evaluation with 3 difficulty-graded tasks"
         ),
         "readme_content": _load_readme_content(),
         "version": "1.0.0",
-        "author": "OMCHOKSI108",
+        "author": "Galcogens",
         "documentation_url": "/docs",
+        "tasks": [
+            {
+                "id": "easy",
+                "name": "Quick Sort",
+                "description": "Archive 3 spam/newsletter emails",
+                "difficulty": "easy",
+            },
+            {
+                "id": "medium",
+                "name": "Priority Triage",
+                "description": (
+                    "Triage 5 mixed-priority emails with "
+                    "calendar scheduling"
+                ),
+                "difficulty": "medium",
+            },
+            {
+                "id": "hard",
+                "name": "Dynamic Crisis",
+                "description": (
+                    "Handle 7-10 emails with dynamic events "
+                    "and escalations"
+                ),
+                "difficulty": "hard",
+            },
+        ],
     }
 
 
@@ -154,22 +168,7 @@ _replace_route(
 
 
 def run_server(host: str = "0.0.0.0", port: int = 8000) -> None:
-    """
-    Entry point for direct execution via uv run or python -m.
-
-    This function enables running the server without Docker:
-        uv run --project . server
-        uv run --project . server --port 8001
-        python -m EmailTriage.server.app
-
-    Args:
-        host: Host address to bind to (default: "0.0.0.0")
-        port: Port number to listen on (default: 8000)
-
-    For production deployments, consider using uvicorn directly with
-    multiple workers:
-        uvicorn EmailTriage.server.app:app --workers 4
-    """
+    """Entry point for direct execution via uv run or python -m."""
     uvicorn.run(app, host=host, port=port)
 
 

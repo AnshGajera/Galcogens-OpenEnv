@@ -4,11 +4,11 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""EmailTriage environment implementation."""
+"""EmailTriage environment implementation with 3 difficulty-graded tasks."""
 
 from dataclasses import dataclass
 import random
-from typing import List
+from typing import Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from openenv.core.env_server.interfaces import Environment
@@ -27,13 +27,61 @@ except ImportError:
     )
 
 
-class EmailtriageEnvironment(Environment):
-    """Multi-turn environment for email triage and workflow orchestration."""
+# ---------------------------------------------------------------------------
+# Task configuration constants
+# ---------------------------------------------------------------------------
 
-    # Enable concurrent WebSocket sessions.
-    # Set to True if your environment isolates state between instances.
-    # When True, multiple WebSocket clients can connect simultaneously, each
-    # getting their own environment instance when using factory mode in app.py.
+
+@dataclass(frozen=True)
+class _TaskConfig:
+    """Immutable per-task configuration."""
+    task_id: str
+    inbox_size_min: int
+    inbox_size_max: int
+    max_steps: int
+    dynamic_events_enabled: bool
+    description: str
+
+
+TASK_CONFIGS: Dict[str, _TaskConfig] = {
+    "easy": _TaskConfig(
+        task_id="easy",
+        inbox_size_min=3,
+        inbox_size_max=3,
+        max_steps=6,
+        dynamic_events_enabled=False,
+        description="Archive 3 spam/newsletter emails",
+    ),
+    "medium": _TaskConfig(
+        task_id="medium",
+        inbox_size_min=5,
+        inbox_size_max=5,
+        max_steps=10,
+        dynamic_events_enabled=False,
+        description="Triage 5 mixed-priority emails with calendar scheduling",
+    ),
+    "hard": _TaskConfig(
+        task_id="hard",
+        inbox_size_min=7,
+        inbox_size_max=10,
+        max_steps=12,
+        dynamic_events_enabled=True,
+        description="Handle 7-10 emails with dynamic events and escalations",
+    ),
+}
+
+VALID_TASK_IDS = list(TASK_CONFIGS.keys())
+
+
+class EmailtriageEnvironment(Environment):
+    """Multi-turn environment for email triage and workflow orchestration.
+
+    Supports 3 difficulty-graded tasks:
+      - easy:   3 archivable emails, no dynamic events
+      - medium: 5 mixed emails with calendar scheduling, no dynamic events
+      - hard:   7–10 emails with dynamic mid-episode events
+    """
+
     SUPPORTS_CONCURRENT_SESSIONS: bool = True
 
     @dataclass
@@ -48,11 +96,16 @@ class EmailtriageEnvironment(Environment):
         status: str = "unread"
         requires_slot: bool = False
 
-    def __init__(self):
-        """Initialize the EmailTriage environment."""
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def __init__(self) -> None:
+        self._task_config: _TaskConfig = TASK_CONFIGS["hard"]
         self._state = EmailtriageState(
             episode_id=str(uuid4()),
             step_count=0,
+            task_id="hard",
             inbox=[],
             calendar_slots=[],
             queried_calendar=False,
@@ -60,7 +113,6 @@ class EmailtriageEnvironment(Environment):
         )
         self._history: List[str] = []
         self._last_action_result = ""
-        self._max_steps = 12
         self._default_calendar_slots = [
             "2026-04-03 10:00",
             "2026-04-03 14:00",
@@ -71,11 +123,21 @@ class EmailtriageEnvironment(Environment):
         self._last_read_payload: List[str] = []
         self._triggered_events: set[str] = set()
 
-    def reset(self) -> EmailtriageObservation:
-        """Reset the environment and return the first inbox observation."""
+    def reset(self, *, task_id: str = "hard") -> EmailtriageObservation:
+        """Reset the environment for the given task and return initial obs.
+
+        Args:
+            task_id: One of "easy", "medium", "hard" (default "hard").
+        """
+        if task_id not in TASK_CONFIGS:
+            task_id = "hard"
+
+        self._task_config = TASK_CONFIGS[task_id]
+
         self._state = EmailtriageState(
             episode_id=str(uuid4()),
             step_count=0,
+            task_id=task_id,
             inbox=[],
             calendar_slots=list(self._default_calendar_slots),
             queried_calendar=False,
@@ -85,8 +147,10 @@ class EmailtriageEnvironment(Environment):
         self._last_read_payload = []
         self._triggered_events = set()
         self._last_action_result = (
-            "Environment reset. Start triaging the inbox."
+            f"Environment reset for task '{task_id}' "
+            f"({self._task_config.description}). Start triaging the inbox."
         )
+
         self._emails = self._build_episode_emails()
         self._sync_state_inbox()
 
@@ -94,7 +158,7 @@ class EmailtriageEnvironment(Environment):
 
     def step(
         self, action: EmailtriageAction
-    ) -> EmailtriageObservation:  # type: ignore[override]
+    ) -> EmailtriageObservation:
         """Execute one triage step and return graded feedback."""
         self._state.step_count += 1
         self._last_read_payload = []
@@ -107,7 +171,12 @@ class EmailtriageEnvironment(Environment):
 
         processed_before = len(self._state.processed_email_ids)
         reward, feedback = self._route_action(action)
-        event_feedback = self._apply_dynamic_events()
+
+        # Dynamic events only fire on hard difficulty
+        event_feedback = ""
+        if self._task_config.dynamic_events_enabled:
+            event_feedback = self._apply_dynamic_events()
+
         processed_after = len(self._state.processed_email_ids)
 
         # Reward concrete progress to produce smoother gradients for RL.
@@ -131,7 +200,7 @@ class EmailtriageEnvironment(Environment):
 
         done = (
             self._is_all_processed()
-            or self._state.step_count >= self._max_steps
+            or self._state.step_count >= self._task_config.max_steps
         )
 
         if done and self._is_all_processed():
@@ -140,8 +209,147 @@ class EmailtriageEnvironment(Environment):
 
         return self._build_observation(reward=reward, done=done)
 
+    # ------------------------------------------------------------------
+    # Email pool builders (per task)
+    # ------------------------------------------------------------------
+
     def _build_episode_emails(self) -> List[_EmailItem]:
-        """Build a randomized 5-10 email inbox for each episode."""
+        """Build inbox for the current task difficulty."""
+        task_id = self._task_config.task_id
+
+        if task_id == "easy":
+            return self._build_easy_emails()
+        elif task_id == "medium":
+            return self._build_medium_emails()
+        else:
+            return self._build_hard_emails()
+
+    def _build_easy_emails(self) -> List[_EmailItem]:
+        """Easy: 3 archivable spam/newsletter/notification emails."""
+        pool = [
+            self._EmailItem(
+                email_id=0,
+                sender="no-reply@promo.shop",
+                subject="Flash sale: 70% off accessories",
+                body="Marketing content. No user follow-up needed.",
+                priority="low",
+                kind="spam",
+                expected_action="archive",
+            ),
+            self._EmailItem(
+                email_id=0,
+                sender="digest@newsletters.ai",
+                subject="Weekly AI digest",
+                body="Curated newsletter with general updates.",
+                priority="low",
+                kind="newsletter",
+                expected_action="archive",
+            ),
+            self._EmailItem(
+                email_id=0,
+                sender="hr@company.com",
+                subject="Policy reminder",
+                body="Quarterly policy acknowledgment reminder.",
+                priority="low",
+                kind="notification",
+                expected_action="archive",
+            ),
+            self._EmailItem(
+                email_id=0,
+                sender="offers@store.example",
+                subject="Weekend coupons",
+                body="Promotional coupons and shopping suggestions.",
+                priority="low",
+                kind="spam",
+                expected_action="archive",
+            ),
+            self._EmailItem(
+                email_id=0,
+                sender="news@techbulletin.io",
+                subject="This week in open source",
+                body="Roundup of trending repos and release notes.",
+                priority="low",
+                kind="newsletter",
+                expected_action="archive",
+            ),
+        ]
+        selected = random.sample(pool, k=3)
+        random.shuffle(selected)
+        return self._assign_ids(selected)
+
+    def _build_medium_emails(self) -> List[_EmailItem]:
+        """Medium: 5 mixed emails — some archivable, some need drafts."""
+        required = [
+            # Must archive
+            self._EmailItem(
+                email_id=0,
+                sender="no-reply@promo.shop",
+                subject="Flash sale: 70% off accessories",
+                body="Marketing content. No user follow-up needed.",
+                priority="low",
+                kind="spam",
+                expected_action="archive",
+            ),
+            # Must draft (meeting scheduling)
+            self._EmailItem(
+                email_id=0,
+                sender="alex@clientco.com",
+                subject="Request: project kickoff meeting",
+                body="Please suggest a 30-minute slot next week.",
+                priority="medium",
+                kind="meeting",
+                expected_action="draft_email",
+                requires_slot=True,
+            ),
+            # Must draft (client request)
+            self._EmailItem(
+                email_id=0,
+                sender="sam@partner.io",
+                subject="Need integration timeline",
+                body="Could you share a realistic delivery window?",
+                priority="medium",
+                kind="client_request",
+                expected_action="draft_email",
+            ),
+        ]
+
+        pool = [
+            self._EmailItem(
+                email_id=0,
+                sender="digest@newsletters.ai",
+                subject="Weekly AI digest",
+                body="Curated newsletter with general updates.",
+                priority="low",
+                kind="newsletter",
+                expected_action="archive",
+            ),
+            self._EmailItem(
+                email_id=0,
+                sender="hr@company.com",
+                subject="Policy reminder",
+                body="Quarterly policy acknowledgment reminder.",
+                priority="low",
+                kind="notification",
+                expected_action="archive",
+            ),
+            self._EmailItem(
+                email_id=0,
+                sender="billing@services.com",
+                subject="Invoice copy",
+                body="Please confirm invoice receipt and processing ETA.",
+                priority="medium",
+                kind="client_request",
+                expected_action="draft_email",
+            ),
+        ]
+
+        additional = random.sample(pool, k=2)
+        selected = required + additional
+        random.shuffle(selected)
+        return self._assign_ids(selected)
+
+    def _build_hard_emails(self) -> List[_EmailItem]:
+        """Hard: 7-10 emails with full diversity — original behavior."""
         required = [
             self._EmailItem(
                 email_id=0,
@@ -240,16 +448,25 @@ class EmailtriageEnvironment(Environment):
             ),
         ]
 
-        target_count = random.randint(5, 10)
+        cfg = self._task_config
+        target_count = random.randint(cfg.inbox_size_min, cfg.inbox_size_max)
         additional_count = target_count - len(required)
-        selected = required + random.sample(pool, k=additional_count)
+        selected = required + random.sample(
+            pool, k=min(additional_count, len(pool))
+        )
         random.shuffle(selected)
+        return self._assign_ids(selected)
 
-        emails: List[EmailtriageEnvironment._EmailItem] = []
-        for index, item in enumerate(selected, start=1):
-            emails.append(
-                self._EmailItem(
-                    email_id=100 + index,
+    @staticmethod
+    def _assign_ids(
+        items: List["EmailtriageEnvironment._EmailItem"],
+    ) -> List["EmailtriageEnvironment._EmailItem"]:
+        """Assign sequential IDs starting from 101."""
+        result: List[EmailtriageEnvironment._EmailItem] = []
+        for idx, item in enumerate(items, start=1):
+            result.append(
+                EmailtriageEnvironment._EmailItem(
+                    email_id=100 + idx,
                     sender=item.sender,
                     subject=item.subject,
                     body=item.body,
@@ -260,7 +477,11 @@ class EmailtriageEnvironment(Environment):
                     expected_action=item.expected_action,
                 )
             )
-        return emails
+        return result
+
+    # ------------------------------------------------------------------
+    # Observation builder
+    # ------------------------------------------------------------------
 
     def _build_observation(
         self, reward: float, done: bool
@@ -294,13 +515,18 @@ class EmailtriageEnvironment(Environment):
             metadata={
                 "episode_id": self._state.episode_id,
                 "step": self._state.step_count,
+                "task_id": self._state.task_id,
                 "emails_total": len(self._emails),
                 "emails_processed": len(self._state.processed_email_ids),
                 "queried_calendar": self._state.queried_calendar,
             },
         )
 
-    def _route_action(self, action: EmailtriageAction) -> tuple[float, str]:
+    # ------------------------------------------------------------------
+    # Action routing & grading
+    # ------------------------------------------------------------------
+
+    def _route_action(self, action: EmailtriageAction) -> Tuple[float, str]:
         """Route action to task logic and compute reward in [0, 1]."""
         if action.action_type == "query_calendar":
             pending_scheduling_count = sum(
@@ -369,7 +595,7 @@ class EmailtriageEnvironment(Environment):
 
     def _grade_draft_action(
         self, target: _EmailItem, action: EmailtriageAction
-    ) -> tuple[float, str]:
+    ) -> Tuple[float, str]:
         """Grade draft_email actions with partial rewards."""
         if target.status != "unread":
             return 0.05, "Email already processed."
@@ -424,6 +650,10 @@ class EmailtriageEnvironment(Environment):
             self._mark_processed(target.email_id)
         return reward, " ".join(feedback_parts)
 
+    # ------------------------------------------------------------------
+    # Dynamic events (hard mode only)
+    # ------------------------------------------------------------------
+
     def _apply_dynamic_events(self) -> str:
         """Apply deterministic dynamic events that alter state mid-episode."""
         if (
@@ -431,7 +661,7 @@ class EmailtriageEnvironment(Environment):
             and "new_urgent_email" not in self._triggered_events
         ):
             new_email = self._EmailItem(
-                email_id=max(email.email_id for email in self._emails) + 1,
+                email_id=max(e.email_id for e in self._emails) + 1,
                 sender="ceo@company.com",
                 subject="Urgent: board pre-read needed today",
                 body="Please draft a concise response with next steps.",
@@ -466,6 +696,10 @@ class EmailtriageEnvironment(Environment):
 
         return ""
 
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
     @staticmethod
     def _clamp_reward(value: float) -> float:
         """Clamp reward values to [0, 1]."""
@@ -493,7 +727,7 @@ class EmailtriageEnvironment(Environment):
             score += 0.15
         return max(0.0, min(1.0, score))
 
-    def _find_email(self, email_id: int) -> _EmailItem | None:
+    def _find_email(self, email_id: int) -> Optional[_EmailItem]:
         """Find an email by ID."""
         for email in self._emails:
             if email.email_id == email_id:

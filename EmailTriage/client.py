@@ -23,38 +23,28 @@ class EmailtriageEnv(
     This client maintains a persistent WebSocket
     connection to the environment server,
     enabling efficient multi-step interactions with lower latency.
-    Each client instance has its own dedicated
-    environment session on the server.
 
     Example:
-        >>> # Connect to a running server
         >>> with EmailtriageEnv(base_url="http://localhost:8000") as client:
-        ...     result = client.reset()
-        ...     print(result.observation.echoed_message)
+        ...     result = client.reset(options={"task_id": "easy"})
+        ...     print(result.observation.inbox_remaining)
         ...
-        ...     result = client.step(EmailtriageAction(message="Hello!"))
-        ...     print(result.observation.echoed_message)
+        ...     result = client.step(EmailtriageAction(
+        ...         action_type="archive", target_email_id=101))
+        ...     print(result.reward)
 
     Example with Docker:
-        >>> # Automatically start container and connect
-        >>> client = EmailtriageEnv.from_docker_image("EmailTriage-env:latest")
+        >>> client = EmailtriageEnv.from_docker_image("emailtriage-env:latest")
         >>> try:
-        ...     result = client.reset()
-        ...     result = client.step(EmailtriageAction(message="Test"))
+        ...     result = client.reset(options={"task_id": "medium"})
+        ...     result = client.step(EmailtriageAction(
+        ...         action_type="read", target_email_id=101))
         ... finally:
         ...     client.close()
     """
 
     def _step_payload(self, action: EmailtriageAction) -> Dict:
-        """
-        Convert EmailtriageAction to JSON payload for step message.
-
-        Args:
-            action: EmailtriageAction instance
-
-        Returns:
-            Dictionary representation suitable for JSON encoding
-        """
+        """Convert EmailtriageAction to JSON payload for step message."""
         return {
             "action_type": action.action_type,
             "target_email_id": action.target_email_id,
@@ -65,15 +55,7 @@ class EmailtriageEnv(
     def _parse_result(
         self, payload: Dict
     ) -> StepResult[EmailtriageObservation]:
-        """
-        Parse server response into StepResult[EmailtriageObservation].
-
-        Args:
-            payload: JSON response data from server
-
-        Returns:
-            StepResult with EmailtriageObservation
-        """
+        """Parse server response into StepResult[EmailtriageObservation]."""
         obs_data = payload.get("observation", {})
         observation = EmailtriageObservation(
             inbox_preview=obs_data.get("inbox_preview", []),
@@ -94,18 +76,11 @@ class EmailtriageEnv(
         )
 
     def _parse_state(self, payload: Dict) -> EmailtriageState:
-        """
-        Parse server response into EmailtriageState object.
-
-        Args:
-            payload: JSON response from state request
-
-        Returns:
-            EmailtriageState with task-specific state fields
-        """
+        """Parse server response into EmailtriageState object."""
         return EmailtriageState(
             episode_id=payload.get("episode_id"),
             step_count=payload.get("step_count", 0),
+            task_id=payload.get("task_id", "hard"),
             inbox=payload.get("inbox", []),
             calendar_slots=payload.get("calendar_slots", []),
             queried_calendar=payload.get("queried_calendar", False),

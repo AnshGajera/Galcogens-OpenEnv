@@ -15,58 +15,63 @@ tags:
 
 # EmailTriage Environment
 
-A dynamic, multi-turn OpenEnv environment for realistic email triage tasks.
+A dynamic, multi-turn OpenEnv environment for realistic email triage tasks with **3 difficulty-graded scenarios**.
 
-This environment is designed for post-training and RL evaluation workflows where an agent must adapt to changing inbox and scheduling conditions over multiple steps.
+## Tasks
+
+| ID | Name | Emails | Max Steps | Dynamic Events |
+|----|------|--------|-----------|----------------|
+| `easy` | Quick Sort | 3 | 6 | ❌ |
+| `medium` | Priority Triage | 5 | 10 | ❌ |
+| `hard` | Dynamic Crisis | 7–10 | 12 | ✅ |
 
 ## What This Environment Tests
 
 - Prioritization of high-value vs low-value emails
-- Correct archiving decisions
+- Correct archiving decisions (spam, newsletters, notifications)
 - Professional draft generation for client/escalation threads
 - Calendar-aware scheduling behavior
-- Adaptation to mid-episode state changes
+- Adaptation to mid-episode state changes (hard mode)
 
 ## Action Schema
 
 EmailtriageAction fields:
 
-- action_type: one of read, archive, query_calendar, draft_email
-- target_email_id: target email for read/archive/draft_email
-- draft_content: response text for draft_email
-- proposed_slot: calendar slot for scheduling drafts
+- `action_type`: one of `read`, `archive`, `query_calendar`, `draft_email`
+- `target_email_id`: target email for read/archive/draft_email
+- `draft_content`: response text for draft_email
+- `proposed_slot`: calendar slot for scheduling drafts
 
 ## Observation Schema
 
 EmailtriageObservation includes:
 
-- inbox_preview
-- returned_emails
-- calendar_slots
-- last_action_result
-- conversation_history
-- inbox_remaining
-- reward
-- done
-- metadata
+- `inbox_preview` — up to 5 unread email summaries
+- `returned_emails` — full text from read actions
+- `calendar_slots` — available scheduling slots
+- `last_action_result` — grader feedback
+- `conversation_history` — recent action trace
+- `inbox_remaining` — unread count
+- `reward` — step reward in [0, 1]
+- `done` — episode completion flag
+- `metadata` — episode_id, step, task_id, progress stats
 
 ## Reward Philosophy
 
-The grader returns diverse, continuous values in [0, 1] (not simple binary pass/fail):
+Continuous [0, 1] rewards with partial credit:
 
-- Partial reward for useful intermediate steps
-- Higher reward for correct business decisions
-- Graded quality signals for drafted replies
-- Extra reward for measurable progress and episode completion
+- Correct archiving: 0.62–0.80
+- Reading (priority-weighted): 0.09–0.25
+- Calendar queries: 0.10–0.46
+- Drafts: multi-factor (appropriateness + quality + calendar + slot + urgency)
+- Progress bonus: +0.12 per processed email
+- Completion bonus: +0.10 for full inbox clearance
 
-## Dynamic Episode Behavior
+## Dynamic Episode Behavior (Hard Mode)
 
-The environment is non-static:
-
-- New urgent email can arrive mid-episode
-- Calendar availability can change while task is in progress
-
-Agents must adapt and recover over multiple steps.
+- New urgent email arrives at step 3
+- Calendar slot removed at step 4+
+- Forces adaptation and multi-step recovery
 
 ## Quick Start
 
@@ -76,13 +81,11 @@ Agents must adapt and recover over multiple steps.
 from EmailTriage import EmailtriageAction, EmailtriageEnv
 
 with EmailtriageEnv.from_docker_image("emailtriage-env:latest") as env:
-    result = env.reset()
-
+    # Easy task
+    result = env.reset(options={"task_id": "easy"})
     action = EmailtriageAction(
-        action_type="query_calendar",
-        target_email_id=-1,
-        draft_content="",
-        proposed_slot="",
+        action_type="archive",
+        target_email_id=101,
     )
     result = env.step(action)
     print(result.reward, result.done)
@@ -94,13 +97,11 @@ with EmailtriageEnv.from_docker_image("emailtriage-env:latest") as env:
 from EmailTriage import EmailtriageAction, EmailtriageEnv
 
 with EmailtriageEnv(base_url="http://localhost:8000") as env:
-    result = env.reset()
+    result = env.reset(options={"task_id": "medium"})
     result = env.step(
         EmailtriageAction(
             action_type="read",
             target_email_id=101,
-            draft_content="",
-            proposed_slot="",
         )
     )
 ```
@@ -120,15 +121,16 @@ openenv validate
 ## Push to Hugging Face Spaces
 
 ```bash
-openenv push --repo-id OMCHOKSI108/EmailTriage
+openenv push --repo-id YOUR_USERNAME/EmailTriage
 ```
 
-After deployment, endpoints are available for:
+## Endpoints
 
-- Web UI: /web
-- API Docs: /docs
-- Health: /health
-- WebSocket: /ws
+- Web UI: `/web`
+- API Docs: `/docs`
+- Health: `/health`
+- WebSocket: `/ws`
+- Metadata: `/metadata`
 
 ## Project Layout
 

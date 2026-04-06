@@ -4,3 +4,16 @@ type: space
 runtime: fastapi
 app: EmailTriage.server.app:app
 port: 8000
+tasks:
+  - id: easy
+    name: Quick Sort
+    description: Archive 3 spam/newsletter emails
+    difficulty: easy
+  - id: medium
+    name: Priority Triage
+    description: Triage 5 mixed-priority emails with calendar scheduling
+    difficulty: medium
+  - id: hard
+    name: Dynamic Crisis
+    description: Handle 7-10 emails with dynamic events and escalations
+    difficulty: hard
