@@ -5,124 +5,125 @@ Emits structured [START]/[STEP]/[END] logs per the hackathon spec.
 """
 
 import os
+import sys
+import asyncio
 import json
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
+import requests
 from openai import OpenAI
 
-from EmailTriage import EmailtriageAction, EmailtriageEnv
-
+# Environment variables
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
-API_KEY = os.getenv("HF_TOKEN")
-LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME", "emailtriage-env:latest")
-BENCHMARK_NAME = "openenv-emailtriage"
+HF_TOKEN = os.getenv("HF_TOKEN", "")
 
+# Space URL - can be set via env or use default
+# Use local server: http://localhost:8000
+# Or HuggingFace Space: https://omchoksi108-emailopenenvrl.hf.space
+SPACE_URL = os.getenv("SPACE_URL", "http://127.0.0.1:8000")
+
+# Benchmark config
+BENCHMARK_NAME = "openenv-emailtriage"
 TASK_IDS = ["easy", "medium", "hard"]
 
-# Per-task step budgets (must fit within 20min total runtime)
+# Per-task max steps
 TASK_MAX_STEPS = {
     "easy": 6,
     "medium": 10,
     "hard": 12,
 }
 
+# Success threshold
+SUCCESS_SCORE_THRESHOLD = 0.1
 
-# ---------------------------------------------------------------------------
-# Structured stdout logging (hackathon spec)
-# ---------------------------------------------------------------------------
+
+# ========================================
+# Structured logging (EXACT format)
+# ========================================
 
 
 def log_start(task: str, env: str, model: str) -> None:
+    """[START] task=<task> env=<benchmark> model=<model>"""
     print(f"[START] task={task} env={env} model={model}", flush=True)
 
 
 def log_step(
-    step: int,
-    action: str,
-    reward: float,
-    done: bool,
-    error: Optional[str],
+    step: int, action: str, reward: float, done: bool, error: Optional[str]
 ) -> None:
-    error_value = error if error else "null"
+    """[STEP] step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>"""
+    error_val = error if error else "null"
+    done_val = "true" if done else "false"
     print(
-        f"[STEP] step={step} action={action} reward={reward:.2f} "
-        f"done={str(done).lower()} error={error_value}",
+        f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}",
         flush=True,
     )
 
 
-def log_end(success: bool, steps: int, rewards: List[float]) -> None:
-    rewards_str = ",".join(f"{value:.2f}" for value in rewards)
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    """[END] success=<true|false> steps=<n> score=<score> rewards=<r1,r2,...,rn>"""
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    success_val = "true" if success else "false"
     print(
-        f"[END] success={str(success).lower()} "
-        f"steps={steps} rewards={rewards_str}",
+        f"[END] success={success_val} steps={steps} score={score:.3f} rewards={rewards_str}",
         flush=True,
     )
 
 
-# ---------------------------------------------------------------------------
+# ========================================
 # Prompt construction
-# ---------------------------------------------------------------------------
+# ========================================
 
 SYSTEM_PROMPT = (
-    "You are an elite, proactive email triage assistant operating in a strictly structured environment. "
-    "Your goal is to process the entire inbox efficiently, maximizing your rewards.\n"
-    "CRITICAL RULES FOR STATE ADVANCEMENT:\n"
-    "1. AVOID LOOPS: Check the 'Last action result' and 'Recently read emails'. If you just read an email, DO NOT read it again. You must take the next logical step (archive or draft_email).\n"
-    "2. SPAM/NEWSLETTERS: If an unread email subject from the 'Inbox preview' clearly looks like spam, marketing, or a low-priority notification, immediately use action_type='archive'.\n"
-    "3. IMPORTANT EMAILS: If an unread email is a client request, meeting, or escalation, use action_type='read' first to get the full text.\n"
-    "4. RESPONDING: If 'Recently read emails' contains a client email that needs a reply, immediately use action_type='draft_email'. "
-    "Your draft_content MUST be professional, mention 'thank', reference specific details from the subject, end firmly with a period, and be over 40 characters.\n"
-    "5. SCHEDULING CALENDAR: If a read email asks for a meeting, first use action_type='query_calendar' (target_email_id=-1) to load availability. "
-    "In your VERY NEXT turn, use action_type='draft_email' and provide one of the listed slots exactly as shown in the 'proposed_slot' field.\n"
-    "6. JSON FORMAT: Respond ONLY with valid JSON. Keys required: action_type, target_email_id, draft_content, proposed_slot. No markdown, no conversational text."
+    "You are an elite, proactive email triage assistant. "
+    "Your goal is to process the entire inbox efficiently.\n\n"
+    "CRITICAL RULES:\n"
+    "1. AVOID LOOPS: Don't read the same email twice.\n"
+    "2. ARCHIVE SPAM: If subject looks like spam/marketing, use archive.\n"
+    "3. READ IMPORTANT: For client/meeting emails, use read first.\n"
+    "4. RESPOND: Use draft_email for replies with professional content.\n"
+    "5. SCHEDULE: First query_calendar, then draft_email with slot.\n"
+    "6. JSON ONLY: Respond with valid JSON containing: action_type, target_email_id, draft_content, proposed_slot."
 )
 
 
 def build_user_prompt(
     task_id: str,
-    inbox_preview: List[dict],
+    inbox_preview: List[Dict],
     returned_emails: List[str],
     calendar_slots: List[str],
     last_action_result: str,
 ) -> str:
     slots = ", ".join(calendar_slots) if calendar_slots else "none"
+
     inbox_lines = [
-        f"id={item.get('id')} sender={item.get('sender')} "
-        f"priority={item.get('priority')} subject={item.get('subject')}"
+        f"id={item.get('id')} sender={item.get('sender')} priority={item.get('priority')} subject={item.get('subject')}"
         for item in inbox_preview
     ]
-    inbox_block = (
-        " | ".join(inbox_lines) if inbox_lines else "no unread emails"
-    )
+    inbox_block = " | ".join(inbox_lines) if inbox_lines else "no unread emails"
     reads_block = " | ".join(returned_emails) if returned_emails else "none"
 
     return (
-        f"Task difficulty: {task_id}. "
-        f"Inbox preview: {inbox_block}. "
-        f"Recently read emails: {reads_block}. "
-        f"Calendar slots: {slots}. "
-        f"Last action result: {last_action_result}."
+        f"Task: {task_id}. Inbox: {inbox_block}. "
+        f"Read: {reads_block}. "
+        f"Calendar: {slots}. "
+        f"Last result: {last_action_result}"
     )
 
 
-# ---------------------------------------------------------------------------
+# ========================================
 # LLM action selection
-# ---------------------------------------------------------------------------
+# ========================================
 
 
-def choose_action_with_llm(
-    client: OpenAI,
-    task_id: str,
-    prompt: str,
-) -> EmailtriageAction:
-    default_action = EmailtriageAction(
-        action_type="query_calendar",
-        target_email_id=-1,
-        draft_content="",
-        proposed_slot="",
-    )
+def choose_action_with_llm(client: OpenAI, task_id: str, prompt: str) -> Dict[str, Any]:
+    """Get action from LLM with safe defaults."""
+    default_action = {
+        "action_type": "query_calendar",
+        "target_email_id": -1,
+        "draft_content": "",
+        "proposed_slot": "",
+    }
 
     try:
         completion = client.chat.completions.create(
@@ -139,113 +140,193 @@ def choose_action_with_llm(
         if not raw_content:
             return default_action
 
-        # Strip markdown fences if the model wraps JSON
+        # Strip markdown fences
         if raw_content.startswith("```"):
             lines = raw_content.split("\n")
             lines = [l for l in lines if not l.strip().startswith("```")]
             raw_content = "\n".join(lines)
 
         data = json.loads(raw_content)
-        return EmailtriageAction(
-            action_type=data.get("action_type", "query_calendar"),
-            target_email_id=int(data.get("target_email_id", -1)),
-            draft_content=data.get("draft_content", ""),
-            proposed_slot=data.get("proposed_slot", ""),
-        )
-    except Exception:
+        return {
+            "action_type": data.get("action_type", "query_calendar"),
+            "target_email_id": int(data.get("target_email_id", -1)),
+            "draft_content": data.get("draft_content", ""),
+            "proposed_slot": data.get("proposed_slot", ""),
+        }
+    except Exception as e:
+        print(f"[WARN] LLM error: {e}", flush=True)
         return default_action
 
 
-# ---------------------------------------------------------------------------
-# Single-task runner
-# ---------------------------------------------------------------------------
+# ========================================
+# HTTP API calls
+# ========================================
 
 
-async def run_task(
+def call_reset(api_url: str, task_id: str) -> Dict:
+    """Call reset endpoint."""
+    try:
+        r = requests.post(
+            f"{api_url}/reset",
+            json={"task_id": task_id},
+            timeout=30,
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        print(f"[ERROR] Reset: {e}", flush=True)
+        return {"observation": {}, "reward": 0, "done": True}
+
+
+def call_step(api_url: str, action: Dict) -> Dict:
+    """Call step endpoint."""
+    try:
+        r = requests.post(
+            f"{api_url}/step",
+            json={"action": action},
+            timeout=30,
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        print(f"[ERROR] Step: {e}", flush=True)
+        return {"observation": {}, "reward": 0, "done": True}
+
+
+# ========================================
+# Single task runner
+# ========================================
+
+
+async def run_task_http(
+    api_url: str,
     llm_client: OpenAI,
-    env: EmailtriageEnv,
     task_id: str,
 ) -> None:
-    """Run a single task (easy/medium/hard) and emit structured logs."""
+    """Run a single task using HTTP API."""
     max_steps = TASK_MAX_STEPS[task_id]
     task_name = f"email-triage-{task_id}"
     rewards: List[float] = []
     steps_taken = 0
+    score = 0.0
     success = False
 
     log_start(task=task_name, env=BENCHMARK_NAME, model=MODEL_NAME)
 
     try:
-        result = await env.reset(options={"task_id": task_id})
+        # Reset environment
+        result = call_reset(api_url, task_id)
+        obs = result.get("observation", {})
 
         for step in range(1, max_steps + 1):
-            obs = result.observation
-            if result.done or obs.inbox_remaining <= 0:
+            # Check if done
+            inbox_remaining = obs.get("inbox_remaining", 0)
+            if result.get("done") or inbox_remaining <= 0:
                 break
 
+            # Build prompt
             prompt = build_user_prompt(
                 task_id=task_id,
-                inbox_preview=obs.inbox_preview,
-                returned_emails=obs.returned_emails,
-                calendar_slots=obs.calendar_slots,
-                last_action_result=obs.last_action_result,
+                inbox_preview=obs.get("inbox_preview", []),
+                returned_emails=obs.get("returned_emails", []),
+                calendar_slots=obs.get("calendar_slots", []),
+                last_action_result=obs.get("last_action_result", ""),
             )
-            action = choose_action_with_llm(llm_client, task_id, prompt)
-            result = await env.step(action)
 
-            reward = float(result.reward or 0.0)
+            # Get action from LLM
+            action_dict = choose_action_with_llm(llm_client, task_id, prompt)
+            action = {"action": action_dict}
+
+            # Execute step
+            result = call_step(api_url, action)
+
+            reward = float(result.get("reward", 0.0))
             rewards.append(reward)
             steps_taken = step
 
+            # Format action string
             action_str = (
-                f"{action.action_type}("
-                f"target_email_id={action.target_email_id},"
-                f"proposed_slot={action.proposed_slot})"
+                f"{action_dict['action_type']}("
+                f"target_email_id={action_dict['target_email_id']},"
+                f"proposed_slot={action_dict['proposed_slot']})"
             )
+
             log_step(
                 step=step,
                 action=action_str,
                 reward=reward,
-                done=bool(result.done),
+                done=bool(result.get("done")),
                 error=None,
             )
 
-            if result.done:
+            obs = result.get("observation", {})
+
+            if result.get("done"):
                 break
 
+        # Calculate score (normalized)
         if rewards:
-            avg = sum(rewards) / len(rewards)
-            success = avg >= 0.5
+            # Total max possible reward varies by task
+            max_total_reward = max_steps * 1.0  # Assuming max 1.0 per step
+            score = sum(rewards) / max_total_reward if max_total_reward > 0 else 0.0
+            score = min(max(score, 0.0), 1.0)  # Clamp to [0, 1]
+            success = score >= SUCCESS_SCORE_THRESHOLD
+
+    except Exception as e:
+        print(f"[ERROR] Task failed: {e}", flush=True)
 
     finally:
-        log_end(success=success, steps=steps_taken, rewards=rewards)
+        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
+# ========================================
+# Main entry point
+# ========================================
 
 
 async def main() -> None:
-    if not API_KEY:
-        raise RuntimeError(
-            "HF_TOKEN must be set in environment variables."
+    """Main async function."""
+    global SPACE_URL
+
+    # Validate API key
+    if HF_TOKEN:
+        # Use with HF_TOKEN
+        SPACE_URL = os.getenv(
+            "SPACE_URL", "https://omchoksi108-emailopenenvrl.hf.space"
         )
+    else:
+        # Use SPACE_URL or fail
+        if not SPACE_URL:
+            print("[ERROR] HF_TOKEN or SPACE_URL must be set", flush=True)
+            sys.exit(1)
 
-    llm_client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-    
-    env = await EmailtriageEnv.from_docker_image(LOCAL_IMAGE_NAME)
+    print(f"[INFO] Using API: {SPACE_URL}", flush=True)
 
-
+    # Initialize LLM client
+    llm_client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
 
     try:
+        # Verify connectivity
+        try:
+            r = requests.get(f"{SPACE_URL}/health", timeout=10)
+            if r.status_code != 200:
+                print(f"[ERROR] Health check: {r.status_code}", flush=True)
+                sys.exit(1)
+            print("[INFO] API health: OK", flush=True)
+        except Exception as e:
+            print(f"[ERROR] Cannot reach API: {e}", flush=True)
+            sys.exit(1)
+
+        # Run all tasks
         for task_id in TASK_IDS:
-            await run_task(llm_client, env, task_id)
-    finally:
-        await env.close()
+            await run_task_http(SPACE_URL, llm_client, task_id)
+
+    except KeyboardInterrupt:
+        print("[INFO] Interrupted", flush=True)
+    except Exception as e:
+        print(f"[ERROR] Main: {e}", flush=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())
-
