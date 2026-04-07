@@ -12,6 +12,7 @@ Endpoints:
     - POST /step: Execute an action
     - GET /state: Get current environment state
     - GET /schema: Get action/observation schemas
+    - GET /health: Health check
     - WS /ws: WebSocket endpoint for persistent sessions
 """
 
@@ -153,6 +154,11 @@ def _root_payload() -> dict[str, Any]:
     }
 
 
+def _health_payload() -> dict[str, Any]:
+    """Health check endpoint for Docker and load balancers."""
+    return {"status": "ok"}
+
+
 _replace_route(
     "/metadata",
     "GET",
@@ -164,6 +170,12 @@ _replace_route(
     "GET",
     _root_payload,
     summary="Get API index",
+)
+_replace_route(
+    "/health",
+    "GET",
+    _health_payload,
+    summary="Health check",
 )
 
 
