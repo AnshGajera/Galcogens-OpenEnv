@@ -16,7 +16,11 @@ from openai import OpenAI
 # Environment variables
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
+
 HF_TOKEN = os.getenv("HF_TOKEN", "")
+API_KEY = os.getenv("HF_TOKEN")
+LOCAL_IMAGE_NAME = os.getenv("IMAGE_NAME")
+BENCHMARK_NAME = "openenv-emailtriage"
 
 # Space URL - can be set via env or use default
 # Use local server: http://localhost:8000
