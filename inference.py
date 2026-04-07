@@ -27,6 +27,31 @@ TASK_MAX_STEPS = {
     "hard": 12,
 }
 
+SPAM_HINTS = {
+    "newsletter",
+    "promo",
+    "promotion",
+    "sale",
+    "discount",
+    "offer",
+    "webinar",
+    "subscribe",
+    "unsubscribe",
+    "nigerian prince",
+    "lottery",
+    "free",
+}
+
+SCHEDULING_HINTS = {
+    "schedule",
+    "meeting",
+    "calendar",
+    "slot",
+    "reschedule",
+    "availability",
+    "call",
+}
+
 
 # ---------------------------------------------------------------------------
 # Structured stdout logging (hackathon spec)
@@ -145,6 +170,12 @@ def choose_action_with_llm(
             lines = [l for l in lines if not l.strip().startswith("```")]
             raw_content = "\n".join(lines)
 
+        # Recover JSON object when model emits extra text around it.
+        if "{" in raw_content and "}" in raw_content:
+            start = raw_content.find("{")
+            end = raw_content.rfind("}") + 1
+            raw_content = raw_content[start:end]
+
         data = json.loads(raw_content)
         return EmailtriageAction(
             action_type=data.get("action_type", "query_calendar"),
@@ -154,6 +185,143 @@ def choose_action_with_llm(
         )
     except Exception:
         return default_action
+
+
+def _is_spam_like(subject: str, sender: str) -> bool:
+    text = f"{subject} {sender}".lower()
+    return any(hint in text for hint in SPAM_HINTS)
+
+
+def _needs_scheduling(read_emails: List[str]) -> bool:
+    joined = " ".join(read_emails).lower()
+    return any(hint in joined for hint in SCHEDULING_HINTS)
+
+
+def _build_draft(read_emails: List[str], slot: str) -> str:
+    if slot:
+        return (
+            "Thank you for your email. I reviewed your request and can confirm "
+            f"{slot} works on our side. Please confirm and I will send the invite."
+        )
+    return (
+        "Thank you for the detailed context. I reviewed your request and will "
+        "follow up with the next concrete steps shortly."
+    )
+
+
+def choose_action_with_fallback(
+    llm_action: EmailtriageAction,
+    inbox_preview: List[dict],
+    returned_emails: List[str],
+    calendar_slots: List[str],
+    recent_actions: List[str],
+    last_read_email_id: int,
+    has_queried_calendar: bool,
+    closed_email_ids: set[int],
+) -> EmailtriageAction:
+    valid_ids = {
+        int(item.get("id"))
+        for item in inbox_preview
+        if item.get("id") is not None
+    }
+
+    repeated_calendar_loop = (
+        len(recent_actions) >= 1
+        and recent_actions[-1] == "query_calendar"
+        and llm_action.action_type == "query_calendar"
+    )
+
+    llm_invalid = (
+        llm_action.action_type not in {"read", "archive", "query_calendar", "draft_email"}
+        or (
+            llm_action.action_type in {"read", "archive"}
+            and llm_action.target_email_id not in valid_ids
+        )
+    )
+
+    # Prefer drafting immediately after reading if we have content.
+    if last_read_email_id != -1 and returned_emails:
+        needs_slot = _needs_scheduling(returned_emails)
+        if needs_slot and (not has_queried_calendar):
+            return EmailtriageAction(
+                action_type="query_calendar",
+                target_email_id=-1,
+                draft_content="",
+                proposed_slot="",
+            )
+
+        slot = calendar_slots[0] if needs_slot and calendar_slots else ""
+        return EmailtriageAction(
+            action_type="draft_email",
+            target_email_id=last_read_email_id,
+            draft_content=_build_draft(returned_emails, slot),
+            proposed_slot=slot,
+        )
+
+    # Only allow query_calendar when it contributes to scheduling.
+    if llm_action.action_type == "query_calendar":
+        if has_queried_calendar and not returned_emails:
+            repeated_calendar_loop = True
+
+    if not repeated_calendar_loop and not llm_invalid:
+        if llm_action.action_type in {"archive", "draft_email"}:
+            if llm_action.target_email_id in closed_email_ids:
+                llm_invalid = True
+            else:
+                return llm_action
+        elif llm_action.action_type == "read":
+            if llm_action.target_email_id in closed_email_ids:
+                llm_invalid = True
+            else:
+                return llm_action
+        else:
+            return llm_action
+
+    # Archive obvious spam/newsletters.
+    for item in inbox_preview:
+        email_id = item.get("id")
+        subject = str(item.get("subject", ""))
+        sender = str(item.get("sender", ""))
+        if (
+            email_id is not None
+            and int(email_id) not in closed_email_ids
+            and _is_spam_like(subject, sender)
+        ):
+            return EmailtriageAction(
+                action_type="archive",
+                target_email_id=int(email_id),
+                draft_content="",
+                proposed_slot="",
+            )
+
+    # Otherwise read the highest-priority available message.
+    priority_rank = {"high": 0, "medium": 1, "low": 2}
+    if inbox_preview:
+        sorted_preview = sorted(
+            [
+                item
+                for item in inbox_preview
+                if int(item.get("id", -1)) not in closed_email_ids
+            ]
+            or inbox_preview,
+            key=lambda item: priority_rank.get(
+                str(item.get("priority", "low")).lower(), 3
+            ),
+        )
+        pick_id = sorted_preview[0].get("id", -1)
+        return EmailtriageAction(
+            action_type="read",
+            target_email_id=int(pick_id) if pick_id is not None else -1,
+            draft_content="",
+            proposed_slot="",
+        )
+
+    return EmailtriageAction(
+        action_type="query_calendar",
+        target_email_id=-1,
+        draft_content="",
+        proposed_slot="",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +340,10 @@ async def run_task(
     rewards: List[float] = []
     steps_taken = 0
     success = False
+    recent_actions: List[str] = []
+    last_read_email_id = -1
+    has_queried_calendar = False
+    closed_email_ids: set[int] = set()
 
     log_start(task=task_name, env=BENCHMARK_NAME, model=MODEL_NAME)
 
@@ -191,6 +363,32 @@ async def run_task(
                 last_action_result=obs.last_action_result,
             )
             action = choose_action_with_llm(llm_client, task_id, prompt)
+            action = choose_action_with_fallback(
+                llm_action=action,
+                inbox_preview=obs.inbox_preview,
+                returned_emails=obs.returned_emails,
+                calendar_slots=obs.calendar_slots,
+                recent_actions=recent_actions,
+                last_read_email_id=last_read_email_id,
+                has_queried_calendar=has_queried_calendar,
+                closed_email_ids=closed_email_ids,
+            )
+
+            if action.action_type == "read":
+                last_read_email_id = action.target_email_id
+            elif action.action_type == "draft_email":
+                closed_email_ids.add(action.target_email_id)
+                last_read_email_id = -1
+            elif action.action_type == "archive":
+                closed_email_ids.add(action.target_email_id)
+
+            if action.action_type == "query_calendar":
+                has_queried_calendar = True
+
+            recent_actions.append(action.action_type)
+            if len(recent_actions) > 6:
+                recent_actions.pop(0)
+
             result = await env.step(action)
 
             reward = float(result.reward or 0.0)

@@ -20,7 +20,7 @@ try:
         EmailtriageState,
     )
 except ImportError:
-    from models import (
+    from EmailTriage.models import (
         EmailtriageAction,
         EmailtriageObservation,
         EmailtriageState,

@@ -34,7 +34,7 @@ try:
     from ..models import EmailtriageAction, EmailtriageObservation
     from .EmailTriage_environment import EmailtriageEnvironment
 except ImportError:
-    from models import EmailtriageAction, EmailtriageObservation
+    from EmailTriage.models import EmailtriageAction, EmailtriageObservation
     from server.EmailTriage_environment import EmailtriageEnvironment
 
 

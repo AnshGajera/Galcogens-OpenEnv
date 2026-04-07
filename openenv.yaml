@@ -1,10 +1,43 @@
 spec_version: 1
 name: EmailTriage
+version: "1.0.0"
 type: space
 runtime: fastapi
+entrypoint: EmailTriage.server.app:app
 app: EmailTriage.server.app:app
 port: 8000
+
+endpoints:
+  reset: POST /reset
+  step: POST /step
+  state: GET /state
+
 tasks:
+  - id: email_classification
+    name: Email Classification
+    description: Classify an email into archive or keep.
+    module: tasks.email_classification:solve
+    grader: graders.email_classification_grader:grade
+  - id: priority_detection
+    name: Priority Detection
+    description: Predict low, medium, or high priority from email content.
+    module: tasks.priority_detection:solve
+    grader: graders.priority_detection_grader:grade
+  - id: response_generation
+    name: Response Generation
+    description: Generate a deterministic professional acknowledgement response.
+    module: tasks.response_generation:solve
+    grader: graders.response_generation_grader:grade
+
+graders:
+  - id: email_classification_grader
+    function: graders.email_classification_grader:grade
+  - id: priority_detection_grader
+    function: graders.priority_detection_grader:grade
+  - id: response_generation_grader
+    function: graders.response_generation_grader:grade
+
+benchmark_tasks:
   - id: easy
     name: Quick Sort
     description: Archive 3 spam/newsletter emails
