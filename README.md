@@ -8,7 +8,7 @@ Email triage is a task professionals perform daily: scanning an inbox, deciding 
 
 ## Tasks
 
-The environment defines **3 tasks** with increasing difficulty:
+The environment defines **3 benchmark tasks** with increasing difficulty:
 
 | Task ID | Name | Emails | Max Steps | Dynamic Events | Description |
 |---------|------|--------|-----------|----------------|-------------|
@@ -16,7 +16,15 @@ The environment defines **3 tasks** with increasing difficulty:
 | `medium` | Priority Triage | 5 | 10 | ❌ | Triage 5 mixed-priority emails with calendar scheduling. Tests reading, drafting, and archiving decisions. |
 | `hard` | Dynamic Crisis | 7–10 | 12 | ✅ | Handle a full inbox with mid-episode urgent emails and calendar changes. Tests adaptation and escalation handling. |
 
-Each task has a **programmatic grader** that scores agent performance on a continuous 0.0–1.0 scale based on action appropriateness, draft quality, calendar awareness, and progress.
+In addition, the root submission manifest defines **3 deterministic validator tasks** used for task/grader compliance checks:
+
+| Task ID | Module | Grader |
+|---------|--------|--------|
+| `email_classification` | `tasks.email_classification:solve` | `graders.email_classification_grader:grade` |
+| `priority_detection` | `tasks.priority_detection:solve` | `graders.priority_detection_grader:grade` |
+| `response_generation` | `tasks.response_generation:solve` | `graders.response_generation_grader:grade` |
+
+All grader scores are normalized to the range 0.0-1.0.
 
 ## Action Space
 
@@ -110,8 +118,13 @@ docker build -t emailtriage-env:latest .
 ### Validate
 
 ```bash
+# Environment validation (inner package)
 cd EmailTriage
 openenv validate
+
+# Return to root and run deterministic task/grader sanity check
+cd ..
+python -c "from tasks import list_tasks; print([t['id'] for t in list_tasks()])"
 ```
 
 ### Deploy to Hugging Face Spaces
@@ -126,9 +139,11 @@ openenv push --repo-id YOUR_USERNAME/EmailTriage
 ```text
 Galcogens-OpenEnv/
 ├── inference.py              # Hackathon inference script (runs 3 tasks)
-├── openenv.yaml              # Root OpenEnv manifest with task metadata
+├── openenv.yaml              # Root submission manifest (entrypoint/endpoints/tasks/graders)
 ├── Dockerfile                # Root container definition
 ├── requirements.txt          # Inference-only dependencies
+├── tasks/                    # Deterministic validator task definitions
+├── graders/                  # Deterministic validator graders (score in [0.0, 1.0])
 ├── README.md                 # This file
 └── EmailTriage/
     ├── __init__.py            # Package exports
@@ -147,7 +162,8 @@ Galcogens-OpenEnv/
 
 - [x] Real-world task simulation (email triage)
 - [x] Full OpenEnv spec: typed models, step()/reset()/state(), openenv.yaml
-- [x] 3 tasks with agent graders (easy → medium → hard, scores 0.0–1.0)
+- [x] 3 benchmark tasks (easy → medium → hard) with continuous grading
+- [x] 3 deterministic submission validator tasks with matching graders (scores 0.0-1.0)
 - [x] Meaningful reward function with partial progress signals
 - [x] Baseline inference script with reproducible scores
 - [x] Dockerfile builds
