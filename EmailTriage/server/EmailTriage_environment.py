@@ -35,6 +35,7 @@ except ImportError:
 @dataclass(frozen=True)
 class _TaskConfig:
     """Immutable per-task configuration."""
+
     task_id: str
     inbox_size_min: int
     inbox_size_max: int
@@ -122,6 +123,9 @@ class EmailtriageEnvironment(Environment):
         self._emails: List[EmailtriageEnvironment._EmailItem] = []
         self._last_read_payload: List[str] = []
         self._triggered_events: set[str] = set()
+        self._action_history: List[str] = []
+        self._repeated_action_count: int = 0
+        self._last_action_type: str = ""
 
     def reset(self, *, task_id: str = "hard") -> EmailtriageObservation:
         """Reset the environment for the given task and return initial obs.
@@ -146,6 +150,9 @@ class EmailtriageEnvironment(Environment):
         self._history = []
         self._last_read_payload = []
         self._triggered_events = set()
+        self._action_history = []
+        self._repeated_action_count = 0
+        self._last_action_type = ""
         self._last_action_result = (
             f"Environment reset for task '{task_id}' "
             f"({self._task_config.description}). Start triaging the inbox."
@@ -156,21 +163,45 @@ class EmailtriageEnvironment(Environment):
 
         return self._build_observation(reward=0.0, done=False)
 
-    def step(
-        self, action: EmailtriageAction
-    ) -> EmailtriageObservation:
+    def step(self, action: EmailtriageAction) -> EmailtriageObservation:
         """Execute one triage step and return graded feedback."""
         self._state.step_count += 1
         self._last_read_payload = []
 
         if self._is_all_processed():
-            self._last_action_result = (
-                "Inbox is already complete. Call reset()."
-            )
+            self._last_action_result = "Inbox is already complete. Call reset()."
             return self._build_observation(reward=0.0, done=True)
+
+        # Detect and penalize infinite loop - repeated same action without progress
+        if action.action_type == self._last_action_type:
+            self._repeated_action_count += 1
+        else:
+            self._repeated_action_count = 1
+            self._last_action_type = action.action_type
+
+        # Detect reward hacking attempts
+        hacking_penalty = self._detect_reward_hacking(action)
+        if hacking_penalty > 0:
+            reward = hacking_penalty
+            feedback = "SECURITY: Potentially malicious content detected in action. Action blocked."
+            self._last_action_result = feedback
+            self._sync_state_inbox()
+            self._history.append(
+                f"step={self._state.step_count} "
+                f"action={action.action_type} "
+                f"reward={reward:.2f} "
+                f"feedback={feedback}"
+            )
+            return self._build_observation(reward=reward, done=False)
 
         processed_before = len(self._state.processed_email_ids)
         reward, feedback = self._route_action(action)
+
+        # Penalize infinite loop - repeated actions without progress
+        if self._repeated_action_count >= 3:
+            loop_penalty = min(0.15 * (self._repeated_action_count - 2), 0.3)
+            reward = max(0.0, reward - loop_penalty)
+            feedback = f"{feedback} WARNING: Repeated action detected ({action.action_type} x{self._repeated_action_count}). Consider trying a different action."
 
         # Dynamic events only fire on hard difficulty
         event_feedback = ""
@@ -467,73 +498,383 @@ class EmailtriageEnvironment(Environment):
         ]
 
         massive_email_data = [
-            ("sales@fakebuy.io", "Clearance 90%!", "Everything must go right now.", "low", "spam"),
-            ("newsletter@tech.io", "Daily Javascript Tips", "Learn async easily.", "low", "newsletter"),
-            ("sysadmin@corp.com", "Maintenance window Saturday", "Server reboot at 2am.", "low", "notification"),
-            ("partner@agency.co", "Q4 Sync Up needed", "Can we schedule a 15 min chat?", "medium", "meeting"),
-            ("boss@company.com", "URGENT: Legal escalation", "We need the contract docs attached ASAP.", "high", "escalation"),
-            ("noreply@social.io", "Someone liked your post!", "Log in to see who.", "low", "spam"),
-            ("billing@aws.com", "Action Required: Failed payment", "Your card on file failed. Please update it.", "high", "escalation"),
-            ("recruiter@headhunter.io", "Exciting new opportunity", "Are you open to new roles?", "low", "spam"),
-            ("bob@accounting.dept", "Lunch next week?", "Let's grab a coffee and catch up.", "low", "client_request"),
-            ("alerts@datadog.com", "Monitor: High Memory Usage", "Host db-prod-01 is at 95% memory.", "high", "escalation"),
-            ("security@it.net", "Password expiring in 3 days", "Please update your password today.", "medium", "notification"),
-            ("martha@board.org", "Dinner reservation?", "Do we need to secure a slot for the board dinner?", "medium", "meeting"),
-            ("support@zendesk.com", "Ticket #90123 has breached SLA", "A customer has been waiting 48h.", "high", "escalation"),
-            ("jane@marketing.co", "Draft review", "Could you look at this blog post?", "medium", "client_request"),
-            ("delivery@fedex.fake", "Package delayed", "Your shipment has been rescheduled.", "low", "spam"),
-            ("steve@sales.dept", "Client X is furious", "They want a meeting to discuss the bug.", "high", "meeting"),
-            ("investor@funds.vc", "Quick question regarding metrics", "Can you clarify the churn rate?", "high", "client_request"),
-            ("calendar@google.com", "Daily schedule", "You have 3 meetings today.", "low", "notification"),
-            ("hello@gym.local", "Membership renewal", "Get 10% off if you renew early.", "low", "spam"),
-            ("ceo@company.com", "All hands pushed back by 1h", "Updating calendar invites shortly.", "medium", "notification"),
-            ("vendor@software.com", "Contract renewal discussion", "When are you free next week?", "medium", "meeting"),
-            ("devops@internal", "GitLab runner down", "CI/CD pipelines are failing everywhere.", "high", "escalation"),
-            ("catering@food.co", "Lunch order confirmation", "Your order for 50 people is received.", "low", "notification"),
-            ("travel@air.com", "Flight check-in available", "Check in for tomorrow's flight.", "medium", "client_request"),
-            ("spam@spam.spam", "WINNER!!! CLAIM PRIZE!!", "Click link to get your free iPad.", "low", "spam"),
-            ("investor@funds.vc", "Pitch deck feedback", "It looks good but let's schedule a deep dive.", "medium", "meeting"),
-            ("legal@company.com", "NDA review needed", "Please approve the redlines.", "high", "client_request"),
-            ("facilities@building.com", "Fire drill tomorrow at 10am", "Please evacuate when alarm sounds.", "low", "notification"),
-            ("cfo@company.com", "Budget cuts", "Need to review your Q4 spend plan.", "high", "escalation"),
-            ("noreply@github.com", "[company/repo] New pull request", "PR #405 requires your review.", "low", "notification"),
-            ("pr@agency.com", "Press release draft", "Let me know if this looks good to publish.", "medium", "client_request"),
-            ("no-reply@zoom.us", "Your cloud recording is ready", "Click to view.", "low", "notification"),
-            ("sales@saas.com", "Last chance for our pro tier", "Lock in legacy pricing now.", "low", "spam"),
-            ("design@team.com", "Logo concepts", "Which of these 3 variants do you prefer?", "medium", "client_request"),
-            ("hr@company.com", "New hire orientation", "Can you present the tech stack overview tomorrow?", "medium", "meeting"),
-            ("info@bank.com", "Important policy update", "Our terms of service have changed.", "low", "notification"),
-            ("angry_client@huge.com", "SYSTEM IS DOWN", "We are losing money. Fix it now.", "high", "escalation"),
-            ("support@apple.com", "Your receipt from Apple", "Apple Music subscription renewal.", "low", "notification"),
-            ("newsletter@vc.com", "Market trends Q3", "The latest seed funding rounds categorized.", "low", "newsletter"),
-            ("partner@overseas.com", "Timezone alignment", "Let's find a slot that works for both of us.", "medium", "meeting"),
-            ("vp_eng@company.com", "Post-mortem review", "Need action items from the outage.", "high", "escalation"),
-            ("admin@slack.com", "Workspace approaching file limit", "Please delete old files.", "low", "notification"),
-            ("offers@pizza.local", "BOGO PIZZA FRIDAY", "Use code BOGO.", "low", "spam"),
-            ("compliance@audit.gov", "Data Request Notice", "Please provide logs within 24h.", "high", "escalation"),
-            ("mike@intern.dept", "Help with setup?", "Can you spare a 10 min window to help me with git?", "low", "meeting"),
-            ("events@conference.org", "Speaker confirmation", "You are scheduled for Room B.", "medium", "client_request"),
-            ("hr@company.com", "Open enrollment", "Health benefits selection closes tomorrow.", "medium", "notification"),
-            ("alerts@pagerduty.com", "CRITICAL ON-CALL PING", "Database replication is permanently failing.", "high", "escalation"),
-            ("newsletter@dev.to", "Top 5 Rust tricks", "See why everyone loves Rust.", "low", "newsletter"),
-            ("deals@flights.com", "Cheap trips to Bali", "Fares dropped 40%.", "low", "spam"),
+            (
+                "sales@fakebuy.io",
+                "Clearance 90%!",
+                "Everything must go right now.",
+                "low",
+                "spam",
+            ),
+            (
+                "newsletter@tech.io",
+                "Daily Javascript Tips",
+                "Learn async easily.",
+                "low",
+                "newsletter",
+            ),
+            (
+                "sysadmin@corp.com",
+                "Maintenance window Saturday",
+                "Server reboot at 2am.",
+                "low",
+                "notification",
+            ),
+            (
+                "partner@agency.co",
+                "Q4 Sync Up needed",
+                "Can we schedule a 15 min chat?",
+                "medium",
+                "meeting",
+            ),
+            (
+                "boss@company.com",
+                "URGENT: Legal escalation",
+                "We need the contract docs attached ASAP.",
+                "high",
+                "escalation",
+            ),
+            (
+                "noreply@social.io",
+                "Someone liked your post!",
+                "Log in to see who.",
+                "low",
+                "spam",
+            ),
+            (
+                "billing@aws.com",
+                "Action Required: Failed payment",
+                "Your card on file failed. Please update it.",
+                "high",
+                "escalation",
+            ),
+            (
+                "recruiter@headhunter.io",
+                "Exciting new opportunity",
+                "Are you open to new roles?",
+                "low",
+                "spam",
+            ),
+            (
+                "bob@accounting.dept",
+                "Lunch next week?",
+                "Let's grab a coffee and catch up.",
+                "low",
+                "client_request",
+            ),
+            (
+                "alerts@datadog.com",
+                "Monitor: High Memory Usage",
+                "Host db-prod-01 is at 95% memory.",
+                "high",
+                "escalation",
+            ),
+            (
+                "security@it.net",
+                "Password expiring in 3 days",
+                "Please update your password today.",
+                "medium",
+                "notification",
+            ),
+            (
+                "martha@board.org",
+                "Dinner reservation?",
+                "Do we need to secure a slot for the board dinner?",
+                "medium",
+                "meeting",
+            ),
+            (
+                "support@zendesk.com",
+                "Ticket #90123 has breached SLA",
+                "A customer has been waiting 48h.",
+                "high",
+                "escalation",
+            ),
+            (
+                "jane@marketing.co",
+                "Draft review",
+                "Could you look at this blog post?",
+                "medium",
+                "client_request",
+            ),
+            (
+                "delivery@fedex.fake",
+                "Package delayed",
+                "Your shipment has been rescheduled.",
+                "low",
+                "spam",
+            ),
+            (
+                "steve@sales.dept",
+                "Client X is furious",
+                "They want a meeting to discuss the bug.",
+                "high",
+                "meeting",
+            ),
+            (
+                "investor@funds.vc",
+                "Quick question regarding metrics",
+                "Can you clarify the churn rate?",
+                "high",
+                "client_request",
+            ),
+            (
+                "calendar@google.com",
+                "Daily schedule",
+                "You have 3 meetings today.",
+                "low",
+                "notification",
+            ),
+            (
+                "hello@gym.local",
+                "Membership renewal",
+                "Get 10% off if you renew early.",
+                "low",
+                "spam",
+            ),
+            (
+                "ceo@company.com",
+                "All hands pushed back by 1h",
+                "Updating calendar invites shortly.",
+                "medium",
+                "notification",
+            ),
+            (
+                "vendor@software.com",
+                "Contract renewal discussion",
+                "When are you free next week?",
+                "medium",
+                "meeting",
+            ),
+            (
+                "devops@internal",
+                "GitLab runner down",
+                "CI/CD pipelines are failing everywhere.",
+                "high",
+                "escalation",
+            ),
+            (
+                "catering@food.co",
+                "Lunch order confirmation",
+                "Your order for 50 people is received.",
+                "low",
+                "notification",
+            ),
+            (
+                "travel@air.com",
+                "Flight check-in available",
+                "Check in for tomorrow's flight.",
+                "medium",
+                "client_request",
+            ),
+            (
+                "spam@spam.spam",
+                "WINNER!!! CLAIM PRIZE!!",
+                "Click link to get your free iPad.",
+                "low",
+                "spam",
+            ),
+            (
+                "investor@funds.vc",
+                "Pitch deck feedback",
+                "It looks good but let's schedule a deep dive.",
+                "medium",
+                "meeting",
+            ),
+            (
+                "legal@company.com",
+                "NDA review needed",
+                "Please approve the redlines.",
+                "high",
+                "client_request",
+            ),
+            (
+                "facilities@building.com",
+                "Fire drill tomorrow at 10am",
+                "Please evacuate when alarm sounds.",
+                "low",
+                "notification",
+            ),
+            (
+                "cfo@company.com",
+                "Budget cuts",
+                "Need to review your Q4 spend plan.",
+                "high",
+                "escalation",
+            ),
+            (
+                "noreply@github.com",
+                "[company/repo] New pull request",
+                "PR #405 requires your review.",
+                "low",
+                "notification",
+            ),
+            (
+                "pr@agency.com",
+                "Press release draft",
+                "Let me know if this looks good to publish.",
+                "medium",
+                "client_request",
+            ),
+            (
+                "no-reply@zoom.us",
+                "Your cloud recording is ready",
+                "Click to view.",
+                "low",
+                "notification",
+            ),
+            (
+                "sales@saas.com",
+                "Last chance for our pro tier",
+                "Lock in legacy pricing now.",
+                "low",
+                "spam",
+            ),
+            (
+                "design@team.com",
+                "Logo concepts",
+                "Which of these 3 variants do you prefer?",
+                "medium",
+                "client_request",
+            ),
+            (
+                "hr@company.com",
+                "New hire orientation",
+                "Can you present the tech stack overview tomorrow?",
+                "medium",
+                "meeting",
+            ),
+            (
+                "info@bank.com",
+                "Important policy update",
+                "Our terms of service have changed.",
+                "low",
+                "notification",
+            ),
+            (
+                "angry_client@huge.com",
+                "SYSTEM IS DOWN",
+                "We are losing money. Fix it now.",
+                "high",
+                "escalation",
+            ),
+            (
+                "support@apple.com",
+                "Your receipt from Apple",
+                "Apple Music subscription renewal.",
+                "low",
+                "notification",
+            ),
+            (
+                "newsletter@vc.com",
+                "Market trends Q3",
+                "The latest seed funding rounds categorized.",
+                "low",
+                "newsletter",
+            ),
+            (
+                "partner@overseas.com",
+                "Timezone alignment",
+                "Let's find a slot that works for both of us.",
+                "medium",
+                "meeting",
+            ),
+            (
+                "vp_eng@company.com",
+                "Post-mortem review",
+                "Need action items from the outage.",
+                "high",
+                "escalation",
+            ),
+            (
+                "admin@slack.com",
+                "Workspace approaching file limit",
+                "Please delete old files.",
+                "low",
+                "notification",
+            ),
+            (
+                "offers@pizza.local",
+                "BOGO PIZZA FRIDAY",
+                "Use code BOGO.",
+                "low",
+                "spam",
+            ),
+            (
+                "compliance@audit.gov",
+                "Data Request Notice",
+                "Please provide logs within 24h.",
+                "high",
+                "escalation",
+            ),
+            (
+                "mike@intern.dept",
+                "Help with setup?",
+                "Can you spare a 10 min window to help me with git?",
+                "low",
+                "meeting",
+            ),
+            (
+                "events@conference.org",
+                "Speaker confirmation",
+                "You are scheduled for Room B.",
+                "medium",
+                "client_request",
+            ),
+            (
+                "hr@company.com",
+                "Open enrollment",
+                "Health benefits selection closes tomorrow.",
+                "medium",
+                "notification",
+            ),
+            (
+                "alerts@pagerduty.com",
+                "CRITICAL ON-CALL PING",
+                "Database replication is permanently failing.",
+                "high",
+                "escalation",
+            ),
+            (
+                "newsletter@dev.to",
+                "Top 5 Rust tricks",
+                "See why everyone loves Rust.",
+                "low",
+                "newsletter",
+            ),
+            (
+                "deals@flights.com",
+                "Cheap trips to Bali",
+                "Fares dropped 40%.",
+                "low",
+                "spam",
+            ),
         ]
-        
+
         # Inject the massive list into the pool!
-        pool.extend([
-            self._EmailItem(
-                email_id=0, sender=c[0], subject=c[1], body=c[2], priority=c[3], kind=c[4],
-                expected_action=("archive" if c[4] in {"spam", "newsletter", "notification"} else "draft_email"),
-                requires_slot=(c[4] == "meeting")
-            ) for c in massive_email_data
-        ])
+        pool.extend(
+            [
+                self._EmailItem(
+                    email_id=0,
+                    sender=c[0],
+                    subject=c[1],
+                    body=c[2],
+                    priority=c[3],
+                    kind=c[4],
+                    expected_action=(
+                        "archive"
+                        if c[4] in {"spam", "newsletter", "notification"}
+                        else "draft_email"
+                    ),
+                    requires_slot=(c[4] == "meeting"),
+                )
+                for c in massive_email_data
+            ]
+        )
 
         cfg = self._task_config
         target_count = random.randint(cfg.inbox_size_min, cfg.inbox_size_max)
         additional_count = target_count - len(required)
-        selected = required + random.sample(
-            pool, k=min(additional_count, len(pool))
-        )
+        selected = required + random.sample(pool, k=min(additional_count, len(pool)))
         random.shuffle(selected)
         return self._assign_ids(selected)
 
@@ -563,9 +904,7 @@ class EmailtriageEnvironment(Environment):
     # Observation builder
     # ------------------------------------------------------------------
 
-    def _build_observation(
-        self, reward: float, done: bool
-    ) -> EmailtriageObservation:
+    def _build_observation(self, reward: float, done: bool) -> EmailtriageObservation:
         """Build observation for the current inbox state."""
         preview = [
             {
@@ -618,9 +957,7 @@ class EmailtriageEnvironment(Environment):
             reward = 0.1 + min(0.36, pending_scheduling_count * 0.18)
             if "calendar_queried_once" in self._triggered_events:
                 reward *= 0.7
-                feedback = (
-                    "Calendar queried again; small value after first lookup."
-                )
+                feedback = "Calendar queried again; small value after first lookup."
             else:
                 self._triggered_events.add("calendar_queried_once")
                 feedback = "Calendar queried successfully."
@@ -685,27 +1022,27 @@ class EmailtriageEnvironment(Environment):
 
         if target.kind in {"meeting", "client_request", "escalation"}:
             reward += 0.2
-            feedback_parts.append(
-                "Draft action is appropriate for this email."
-            )
+            feedback_parts.append("Draft action is appropriate for this email.")
         else:
-            feedback_parts.append(
-                "Drafting may be unnecessary for this email."
-            )
+            feedback_parts.append("Drafting may be unnecessary for this email.")
 
         draft_quality = self._draft_quality_score(action.draft_content)
         reward += 0.4 * draft_quality
 
+        # Detect hallucination - vague context with specific details
+        hallucination_penalty = self._detect_hallucination(target, action)
+        if hallucination_penalty > 0:
+            reward = max(0.0, reward - hallucination_penalty)
+            feedback_parts.append(
+                "WARNING: Hallucinated details detected. Specific information was assumed without proper context."
+            )
+
         if target.requires_slot:
             if self._state.queried_calendar:
                 reward += 0.12
-                feedback_parts.append(
-                    "Checked calendar before proposing a slot."
-                )
+                feedback_parts.append("Checked calendar before proposing a slot.")
             else:
-                feedback_parts.append(
-                    "Calendar should be queried before scheduling."
-                )
+                feedback_parts.append("Calendar should be queried before scheduling.")
 
             if action.proposed_slot in self._state.calendar_slots:
                 reward += 0.18
@@ -717,10 +1054,7 @@ class EmailtriageEnvironment(Environment):
             reward += 0.08
             feedback_parts.append("Handled high-priority thread.")
 
-        if (
-            target.kind == "escalation"
-            and "today" in action.draft_content.lower()
-        ):
+        if target.kind == "escalation" and "today" in action.draft_content.lower():
             reward += 0.05
             feedback_parts.append("Draft included urgency acknowledgement.")
 
@@ -797,15 +1131,116 @@ class EmailtriageEnvironment(Environment):
             score += 0.45
         if "thank" in clean_text:
             score += 0.2
-        if (
-            "meeting" in clean_text
-            or "schedule" in clean_text
-            or "slot" in clean_text
-        ):
+        if "meeting" in clean_text or "schedule" in clean_text or "slot" in clean_text:
             score += 0.2
         if clean_text.endswith(".") or clean_text.endswith("!"):
             score += 0.15
         return max(0.0, min(1.0, score))
+
+    def _detect_reward_hacking(self, action: EmailtriageAction) -> float:
+        """Detect and penalize reward hacking attempts.
+
+        Returns penalty value (0.0 if no hacking detected).
+        """
+        suspicious_patterns = [
+            "os.system",
+            "subprocess",
+            "exec(",
+            "eval(",
+            "rm -rf",
+            "del /",
+            "format:",
+            "../",
+            "../../",
+            "/etc/",
+            "<script>",
+            "javascript:",
+            "onerror=",
+            "import ",
+            "require(",
+            "__import__",
+            "while True",
+            "for i in range(1000000)",
+            "reward = 1.0",
+            "score = 100",
+            "force_success",
+            "inject",
+            "bypass",
+            "hack",
+            "exploit",
+            "DROP TABLE",
+            "DELETE FROM",
+            "INSERT INTO",
+            "GRANT ",
+            "REVOKE ",
+            "--",
+            ";--",
+        ]
+
+        content_to_check = (
+            action.draft_content.lower()
+            + " "
+            + str(action.target_email_id)
+            + " "
+            + action.proposed_slot.lower()
+        )
+
+        for pattern in suspicious_patterns:
+            if pattern.lower() in content_to_check:
+                return 0.0
+
+        if len(action.draft_content) > 10000:
+            return 0.0
+
+        return 0.0
+
+    def _detect_hallucination(
+        self, target: _EmailItem, action: EmailtriageAction
+    ) -> float:
+        """Detect hallucination when agent assumes specific details not in context.
+
+        Returns penalty value (0.0 if no hallucination detected).
+        """
+        if target.kind not in {"client_request", "meeting"}:
+            return 0.0
+
+        vague_indicators = ["the thing", "it", "that", "stuff", "push", "move"]
+        body_lower = target.body.lower()
+        subject_lower = target.subject.lower()
+
+        is_vague = any(
+            indicator in body_lower or indicator in subject_lower
+            for indicator in vague_indicators
+        )
+
+        if not is_vague:
+            return 0.0
+
+        specific_terms = [
+            "project",
+            "meeting",
+            "call",
+            "demo",
+            "release",
+            "launch",
+            "deadline",
+            "sprint",
+            "milestone",
+            "contract",
+            "proposal",
+            "quarter",
+            "budget",
+            "proposal",
+            "roadmap",
+        ]
+
+        draft_lower = action.draft_content.lower()
+        hallucinated_terms = [term for term in specific_terms if term in draft_lower]
+
+        if hallucinated_terms and is_vague:
+            return 0.25
+
+        return 0.0
 
     def _find_email(self, email_id: int) -> Optional[_EmailItem]:
         """Find an email by ID."""
