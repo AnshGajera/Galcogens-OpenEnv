@@ -441,6 +441,7 @@ async def run_task(
     task_name = f"email-triage-{task_id}"
     rewards: List[float] = []
     steps_taken = 0
+    score = 0.01
     success = False
     recent_actions: List[str] = []
     last_read_email_id = -1
@@ -565,7 +566,7 @@ async def main() -> None:
         for task_id in TASK_IDS:
             log_start(task=f"email-triage-{task_id}", env=BENCHMARK_NAME, model=MODEL_NAME)
             log_step(1, "import", 0.0, True, error=_IMPORT_ERROR)
-            log_end(False, 1, 0.0, [0.0])
+            log_end(False, 1, 0.01, [0.01])
         return
 
     try:
@@ -580,7 +581,7 @@ async def main() -> None:
                     done=True,
                     error="API_BASE_URL is missing",
                 )
-                log_end(success=False, steps=1, score=0.0, rewards=[0.0])
+                log_end(success=False, steps=1, score=0.01, rewards=[0.01])
             return
 
         if not API_KEY:
@@ -593,7 +594,7 @@ async def main() -> None:
                     done=True,
                     error="HF_TOKEN/OPENAI_API_KEY is missing",
                 )
-                log_end(success=False, steps=1, score=0.0, rewards=[0.0])
+                log_end(success=False, steps=1, score=0.01, rewards=[0.01])
             return
 
         ok, error_message = preflight_env_endpoints(ENV_BASE_URL)
@@ -607,7 +608,7 @@ async def main() -> None:
                     done=True,
                     error=error_message,
                 )
-                log_end(success=False, steps=1, score=0.0, rewards=[0.0])
+                log_end(success=False, steps=1, score=0.01, rewards=[0.01])
             return
 
         llm_client = OpenAI(base_url=LLM_API_BASE_URL, api_key=API_KEY)

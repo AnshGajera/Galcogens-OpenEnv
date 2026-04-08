@@ -212,7 +212,7 @@ async def run_task_http(
     task_name = f"email-triage-{task_id}"
     rewards: List[float] = []
     steps_taken = 0
-    score = 0.0
+    score = 0.01
     success = False
 
     log_start(task=task_name, env=BENCHMARK_NAME, model=MODEL_NAME)
@@ -268,13 +268,15 @@ async def run_task_http(
             if result.get("done"):
                 break
 
-        # Calculate score (normalized)
+        # Calculate score and keep it strictly inside (0, 1) for validator checks.
         if rewards:
             # Total max possible reward varies by task
             max_total_reward = max_steps * 1.0  # Assuming max 1.0 per step
-            score = sum(rewards) / max_total_reward if max_total_reward > 0 else 0.0
-            score = min(max(score, 0.0), 1.0)  # Clamp to [0, 1]
+            raw_score = sum(rewards) / max_total_reward if max_total_reward > 0 else 0.01
+            score = min(max(raw_score, 0.01), 0.99)
             success = score >= SUCCESS_SCORE_THRESHOLD
+        else:
+            score = 0.01
 
     except Exception as e:
         print(f"[ERROR] Task failed: {e}", flush=True)
