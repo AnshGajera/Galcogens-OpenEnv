@@ -24,18 +24,12 @@ except ImportError:
 
 
 # Try to import models
-try:
-    from ..models import (
-        EmailtriageAction,
-        EmailtriageObservation,
-        EmailtriageState,
-    )
-except ImportError:
-    from models import (
-        EmailtriageAction,
-        EmailtriageObservation,
-        EmailtriageState,
-    )
+# Standardized imports to support both local development and containerized execution
+from models import (
+    EmailtriageAction,
+    EmailtriageObservation,
+    EmailtriageState,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +170,16 @@ class EmailtriageEnvironment(Environment):
 
     def step(self, action: EmailtriageAction) -> EmailtriageObservation:
         """Execute one triage step and return graded feedback."""
+        try:
+            return self._step_impl(action)
+        except Exception as e:
+            self._last_action_result = (
+                f"ERROR: Internal error in step execution: {str(e)}"
+            )
+            return self._build_observation(reward=0.01, done=True)
+
+    def _step_impl(self, action: EmailtriageAction) -> EmailtriageObservation:
+        """Internal implementation of step - wrapped in try-except."""
         self._state.step_count += 1
         self._last_read_payload = []
 

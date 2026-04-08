@@ -31,12 +31,10 @@ except Exception as e:  # pragma: no cover
         "Install dependencies with '\n    uv sync\n'"
     ) from e
 
-try:
-    from ..models import EmailtriageAction, EmailtriageObservation
-    from .EmailTriage_environment import EmailtriageEnvironment
-except ImportError:
-    from models import EmailtriageAction, EmailtriageObservation
-    from server.EmailTriage_environment import EmailtriageEnvironment
+# Standardized imports to support both local development and containerized execution
+from server.EmailTriage_environment import EmailtriageEnvironment
+from models import EmailtriageAction, EmailtriageObservation
+
 
 
 # Create the app with web interface and README integration

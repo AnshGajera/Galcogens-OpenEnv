@@ -15,9 +15,7 @@ from pydantic import Field
 class EmailtriageAction(Action):
     """Action schema for proactive email triage tools."""
 
-    action_type: Literal[
-        "read", "archive", "query_calendar", "draft_email"
-    ] = Field(
+    action_type: Literal["read", "archive", "query_calendar", "draft_email"] = Field(
         ...,
         description="Tool/action selected by the agent",
     )
@@ -44,6 +42,10 @@ class EmailtriageState(State):
     task_id: str = Field(
         default="hard",
         description="Current task difficulty: easy, medium, or hard",
+    )
+    step_count: int = Field(
+        default=0,
+        description="Number of steps taken in current episode",
     )
     inbox: List[Dict[str, str]] = Field(
         default_factory=list,
