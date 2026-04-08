@@ -40,13 +40,49 @@ except ImportError:
 
 
 # Create the app with web interface and README integration
-app = create_app(
-    EmailtriageEnvironment,
-    EmailtriageAction,
-    EmailtriageObservation,
-    env_name="EmailTriage",
-    max_concurrent_envs=1,
-)
+# Wrap in try/except to prevent crashes
+try:
+    app = create_app(
+        EmailtriageEnvironment,
+        EmailtriageAction,
+        EmailtriageObservation,
+        env_name="EmailTriage",
+        max_concurrent_envs=1,
+    )
+except Exception as e:
+    # If create_app fails, create a minimal app that won't crash
+    from fastapi import FastAPI
+    from fastapi.responses import JSONResponse
+
+    app = FastAPI(title="EmailTriage (Fallback)")
+
+    @app.get("/health")
+    def health():
+        return {"status": "error", "message": str(e)}
+
+    @app.post("/reset")
+    def reset(request: dict = None):
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.post("/step")
+    def step(request: dict = None):
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.get("/metadata")
+    def metadata():
+        return {"error": str(e)}
+
+    @app.get("/schema")
+    def schema():
+        return {"error": str(e)}
+
+    @app.get("/state")
+    def state():
+        return {"error": str(e)}
+
+
+# Keep app title and description
+app.title = "EmailTriage Environment API"
 
 # Keep docs metadata explicit to avoid generic duplicate naming in Swagger UI.
 app.title = "EmailTriage Environment API"
@@ -116,8 +152,7 @@ def _metadata_payload() -> dict[str, Any]:
                 "id": "medium",
                 "name": "Priority Triage",
                 "description": (
-                    "Triage 5 mixed-priority emails with "
-                    "calendar scheduling"
+                    "Triage 5 mixed-priority emails with calendar scheduling"
                 ),
                 "difficulty": "medium",
             },
@@ -125,8 +160,7 @@ def _metadata_payload() -> dict[str, Any]:
                 "id": "hard",
                 "name": "Dynamic Crisis",
                 "description": (
-                    "Handle 7-10 emails with dynamic events "
-                    "and escalations"
+                    "Handle 7-10 emails with dynamic events and escalations"
                 ),
                 "difficulty": "hard",
             },

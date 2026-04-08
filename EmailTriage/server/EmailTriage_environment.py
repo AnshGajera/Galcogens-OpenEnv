@@ -8,11 +8,22 @@
 
 from dataclasses import dataclass
 import random
+import sys
 from typing import Dict, List, Optional, Tuple
 from uuid import uuid4
 
-from openenv.core.env_server.interfaces import Environment
+# Try to import openenv - if fails, use mock
+try:
+    from openenv.core.env_server.interfaces import Environment
+except ImportError:
+    # Create a mock Environment class for local development
+    class Environment:
+        """Mock environment when openenv not installed."""
 
+        pass
+
+
+# Try to import models
 try:
     from ..models import (
         EmailtriageAction,
