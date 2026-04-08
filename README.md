@@ -169,6 +169,33 @@ Galcogens-OpenEnv/
 - [x] Dockerfile builds
 - [x] README with environment description, action/observation spaces, setup instructions
 
+## Baseline Scores
+
+Use this command to reproduce baseline scores:
+
+```bash
+python inference.py
+```
+
+Environment used for reproducible runs:
+
+- `API_BASE_URL=https://router.huggingface.co/v1`
+- `MODEL_NAME=Qwen/Qwen2.5-72B-Instruct`
+- `HF_TOKEN=<your-token>`
+- `ENV_BASE_URL=http://localhost:8000` (or your deployed Space URL)
+
+Recorded scores from a successful local containerized run (`emailtriage-env:local-check`):
+
+| Task | Score | Notes |
+|------|-------|-------|
+| easy | 0.72 | 6 steps |
+| medium | 0.60 | 10 steps |
+| hard | 0.62 | 12 steps |
+
+Aggregate baseline (mean across tasks): **0.65**
+
+The inference logger prints scores in `[0.00, 1.00]` and emits strict `[START]`, `[STEP]`, and `[END]` stdout lines for evaluator parsing.
+
 ## Environment Variables
 
 | Variable | Required | Default | Description |

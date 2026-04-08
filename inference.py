@@ -23,11 +23,11 @@ except Exception as _import_err:
     _IMPORT_OK = False
     _IMPORT_ERROR = str(_import_err)
 
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-ENV_BASE_URL = os.getenv("ENV_BASE_URL", API_BASE_URL)
-LLM_API_BASE_URL = os.getenv("LLM_API_BASE_URL", API_BASE_URL)
-MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
-API_KEY = os.getenv("HF_TOKEN")
+API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
+ENV_BASE_URL = os.getenv("ENV_BASE_URL") or "http://localhost:8000"
+LLM_API_BASE_URL = os.getenv("LLM_API_BASE_URL") or API_BASE_URL
+MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY")
 BENCHMARK_NAME = "openenv-emailtriage"
 REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "8"))
 REQUEST_MAX_RETRIES = int(os.getenv("REQUEST_MAX_RETRIES", "3"))
@@ -553,7 +553,6 @@ async def run_task(
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
 
-
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -566,7 +565,7 @@ async def main() -> None:
         for task_id in TASK_IDS:
             log_start(task=f"email-triage-{task_id}", env=BENCHMARK_NAME, model=MODEL_NAME)
             log_step(1, "import", 0.0, True, error=_IMPORT_ERROR)
-            log_end(False, 1, [0.0])
+            log_end(False, 1, 0.0, [0.0])
         return
 
     try:
@@ -581,7 +580,7 @@ async def main() -> None:
                     done=True,
                     error="API_BASE_URL is missing",
                 )
-                log_end(success=False, steps=1, rewards=[0.0])
+                log_end(success=False, steps=1, score=0.0, rewards=[0.0])
             return
 
         if not API_KEY:
@@ -592,9 +591,9 @@ async def main() -> None:
                     action="preflight",
                     reward=0.0,
                     done=True,
-                    error="HF_TOKEN is missing",
+                    error="HF_TOKEN/OPENAI_API_KEY is missing",
                 )
-                log_end(success=False, steps=1, rewards=[0.0])
+                log_end(success=False, steps=1, score=0.0, rewards=[0.0])
             return
 
         ok, error_message = preflight_env_endpoints(ENV_BASE_URL)
@@ -608,7 +607,7 @@ async def main() -> None:
                     done=True,
                     error=error_message,
                 )
-                log_end(success=False, steps=1, rewards=[0.0])
+                log_end(success=False, steps=1, score=0.0, rewards=[0.0])
             return
 
         llm_client = OpenAI(base_url=LLM_API_BASE_URL, api_key=API_KEY)

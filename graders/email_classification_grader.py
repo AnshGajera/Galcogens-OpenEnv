@@ -7,6 +7,16 @@ def _clamp(score: float) -> float:
     return max(0.01, min(0.99, float(score)))
 
 
+def _strict_score(score: float) -> float:
+    """Map any score to strict open interval (0, 1)."""
+    bounded = _clamp(score)
+    if bounded <= 0.0:
+        return 0.01
+    if bounded >= 1.0:
+        return 0.99
+    return bounded
+
+
 def grade(output: dict, expected: dict) -> float:
     """Score output label against expected label.
 
@@ -16,7 +26,7 @@ def grade(output: dict, expected: dict) -> float:
     - invalid or missing prediction: ~0.01
     """
     if not isinstance(output, dict) or not isinstance(expected, dict):
-        return 0.001
+        return 0.01
 
     predicted = str(output.get("label", "")).strip().lower()
     target = str(expected.get("label", "")).strip().lower()
@@ -26,4 +36,4 @@ def grade(output: dict, expected: dict) -> float:
         return 0.99
     if predicted in valid and target in valid:
         return 0.5
-    return _clamp(0.001)
+    return 0.01

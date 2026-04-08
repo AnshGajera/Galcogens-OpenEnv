@@ -35,9 +35,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         uv sync --no-editable; \
     fi
 
-# Explicitly install the EmailTriage package for strict submission checks.
-RUN /app/env/.venv/bin/pip install -e ./EmailTriage
-
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -50,7 +47,7 @@ COPY --from=builder /app/env/.venv /app/.venv
 COPY --from=builder /app/env /app/env
 
 ENV PATH="/app/.venv/bin:$PATH"
-ENV PYTHONPATH="/app/env:$PYTHONPATH"
+ENV PYTHONPATH="/app/env"
 ENV env_enable_web_interface=true
 
 EXPOSE 8000
