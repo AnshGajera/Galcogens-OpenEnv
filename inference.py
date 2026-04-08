@@ -92,11 +92,11 @@ def log_step(
     )
 
 
-def log_end(success: bool, steps: int, rewards: List[float]) -> None:
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
     rewards_str = ",".join(f"{value:.2f}" for value in rewards)
     print(
         f"[END] success={str(success).lower()} "
-        f"steps={steps} rewards={rewards_str}",
+        f"steps={steps} score={score:.3f} rewards={rewards_str}",
         flush=True,
     )
 
@@ -544,12 +544,14 @@ async def run_task(
             if result.done:
                 break
 
-        if rewards:
-            avg = sum(rewards) / len(rewards)
-            success = avg >= 0.5
+        score = sum(rewards) / len(rewards) if rewards else 0.01
+        score = min(max(score, 0.01), 0.99)
+        # Success threshold is 0.5 avg reward
+        success = score >= 0.5
 
     finally:
-        log_end(success=success, steps=steps_taken, rewards=rewards)
+        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+
 
 
 # ---------------------------------------------------------------------------

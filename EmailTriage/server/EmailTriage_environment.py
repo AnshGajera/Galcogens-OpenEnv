@@ -976,7 +976,7 @@ class EmailtriageEnvironment(Environment):
 
         target = self._find_email(action.target_email_id)
         if target is None:
-            return 0.0, "Invalid or missing target_email_id."
+            return 0.01, "Invalid or missing target_email_id."
 
         if action.action_type == "read":
             self._last_read_payload = [
@@ -1019,7 +1019,7 @@ class EmailtriageEnvironment(Environment):
         if action.action_type == "draft_email":
             return self._grade_draft_action(target, action)
 
-        return 0.0, "Unsupported action type."
+        return 0.01, "Unsupported action type."
 
     def _grade_draft_action(
         self, target: _EmailItem, action: EmailtriageAction
@@ -1127,17 +1127,17 @@ class EmailtriageEnvironment(Environment):
 
     @staticmethod
     def _clamp_reward(value: float) -> float:
-        """Clamp reward values to [0, 1]."""
-        return max(0.0, min(1.0, value))
+        """Clamp reward values to (0, 1) exclusive."""
+        return max(0.01, min(0.99, value))
 
     @staticmethod
     def _draft_quality_score(draft_content: str) -> float:
         """Score draft quality with deterministic heuristics."""
         clean_text = draft_content.strip().lower()
         if not clean_text:
-            return 0.0
+            return 0.01
 
-        score = 0.0
+        score = 0.01
         if len(clean_text) >= 40:
             score += 0.45
         if "thank" in clean_text:
@@ -1146,7 +1146,7 @@ class EmailtriageEnvironment(Environment):
             score += 0.2
         if clean_text.endswith(".") or clean_text.endswith("!"):
             score += 0.15
-        return max(0.0, min(1.0, score))
+        return max(0.01, min(0.99, score))
 
     def _detect_reward_hacking(self, action: EmailtriageAction) -> float:
         """Detect and penalize reward hacking attempts.

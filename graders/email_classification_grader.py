@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 def _clamp(score: float) -> float:
-    return max(0.0, min(1.0, float(score)))
+    return max(0.01, min(0.99, float(score)))
 
 
 def grade(output: dict, expected: dict) -> float:
