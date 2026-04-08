@@ -35,6 +35,7 @@ except ImportError:
 @dataclass(frozen=True)
 class _TaskConfig:
     """Immutable per-task configuration."""
+
     task_id: str
     inbox_size_min: int
     inbox_size_max: int
@@ -156,17 +157,23 @@ class EmailtriageEnvironment(Environment):
 
         return self._build_observation(reward=0.0, done=False)
 
-    def step(
-        self, action: EmailtriageAction
-    ) -> EmailtriageObservation:
+    def step(self, action: EmailtriageAction) -> EmailtriageObservation:
         """Execute one triage step and return graded feedback."""
+        try:
+            return self._step_impl(action)
+        except Exception as e:
+            self._last_action_result = (
+                f"ERROR: Internal error in step execution: {str(e)}"
+            )
+            return self._build_observation(reward=0.01, done=True)
+
+    def _step_impl(self, action: EmailtriageAction) -> EmailtriageObservation:
+        """Internal implementation of step - wrapped in try-except."""
         self._state.step_count += 1
         self._last_read_payload = []
 
         if self._is_all_processed():
-            self._last_action_result = (
-                "Inbox is already complete. Call reset()."
-            )
+            self._last_action_result = "Inbox is already complete. Call reset()."
             return self._build_observation(reward=0.0, done=True)
 
         processed_before = len(self._state.processed_email_ids)
@@ -451,9 +458,7 @@ class EmailtriageEnvironment(Environment):
         cfg = self._task_config
         target_count = random.randint(cfg.inbox_size_min, cfg.inbox_size_max)
         additional_count = target_count - len(required)
-        selected = required + random.sample(
-            pool, k=min(additional_count, len(pool))
-        )
+        selected = required + random.sample(pool, k=min(additional_count, len(pool)))
         random.shuffle(selected)
         return self._assign_ids(selected)
 
@@ -483,9 +488,7 @@ class EmailtriageEnvironment(Environment):
     # Observation builder
     # ------------------------------------------------------------------
 
-    def _build_observation(
-        self, reward: float, done: bool
-    ) -> EmailtriageObservation:
+    def _build_observation(self, reward: float, done: bool) -> EmailtriageObservation:
         """Build observation for the current inbox state."""
         preview = [
             {
@@ -538,9 +541,7 @@ class EmailtriageEnvironment(Environment):
             reward = 0.1 + min(0.36, pending_scheduling_count * 0.18)
             if "calendar_queried_once" in self._triggered_events:
                 reward *= 0.7
-                feedback = (
-                    "Calendar queried again; small value after first lookup."
-                )
+                feedback = "Calendar queried again; small value after first lookup."
             else:
                 self._triggered_events.add("calendar_queried_once")
                 feedback = "Calendar queried successfully."
@@ -605,13 +606,9 @@ class EmailtriageEnvironment(Environment):
 
         if target.kind in {"meeting", "client_request", "escalation"}:
             reward += 0.2
-            feedback_parts.append(
-                "Draft action is appropriate for this email."
-            )
+            feedback_parts.append("Draft action is appropriate for this email.")
         else:
-            feedback_parts.append(
-                "Drafting may be unnecessary for this email."
-            )
+            feedback_parts.append("Drafting may be unnecessary for this email.")
 
         draft_quality = self._draft_quality_score(action.draft_content)
         reward += 0.4 * draft_quality
@@ -619,13 +616,9 @@ class EmailtriageEnvironment(Environment):
         if target.requires_slot:
             if self._state.queried_calendar:
                 reward += 0.12
-                feedback_parts.append(
-                    "Checked calendar before proposing a slot."
-                )
+                feedback_parts.append("Checked calendar before proposing a slot.")
             else:
-                feedback_parts.append(
-                    "Calendar should be queried before scheduling."
-                )
+                feedback_parts.append("Calendar should be queried before scheduling.")
 
             if action.proposed_slot in self._state.calendar_slots:
                 reward += 0.18
@@ -637,10 +630,7 @@ class EmailtriageEnvironment(Environment):
             reward += 0.08
             feedback_parts.append("Handled high-priority thread.")
 
-        if (
-            target.kind == "escalation"
-            and "today" in action.draft_content.lower()
-        ):
+        if target.kind == "escalation" and "today" in action.draft_content.lower():
             reward += 0.05
             feedback_parts.append("Draft included urgency acknowledgement.")
 
@@ -717,11 +707,7 @@ class EmailtriageEnvironment(Environment):
             score += 0.45
         if "thank" in clean_text:
             score += 0.2
-        if (
-            "meeting" in clean_text
-            or "schedule" in clean_text
-            or "slot" in clean_text
-        ):
+        if "meeting" in clean_text or "schedule" in clean_text or "slot" in clean_text:
             score += 0.2
         if clean_text.endswith(".") or clean_text.endswith("!"):
             score += 0.15
