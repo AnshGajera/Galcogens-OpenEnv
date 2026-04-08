@@ -27,17 +27,17 @@ def _strict_score(score: float) -> float:
 def grade(output: dict, expected: dict) -> float:
     """Score priority predictions with exact and partial credit."""
     if not isinstance(output, dict) or not isinstance(expected, dict):
-        return 0.01
+        return _strict_score(0.01)
 
     predicted = str(output.get("priority", "")).strip().lower()
     target = str(expected.get("priority", "")).strip().lower()
 
     if predicted not in PRIORITY_RANK or target not in PRIORITY_RANK:
-        return 0.01
+        return _strict_score(0.01)
     if predicted == target:
-        return 0.99
+        return _strict_score(0.99)
 
     distance = abs(PRIORITY_RANK[predicted] - PRIORITY_RANK[target])
     if distance == 1:
-        return 0.5
-    return 0.01
+        return _strict_score(0.5)
+    return _strict_score(0.01)

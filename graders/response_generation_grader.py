@@ -20,15 +20,15 @@ def _strict_score(score: float) -> float:
 def grade(output: dict, expected: dict) -> float:
     """Score generated response with exact and partial credit."""
     if not isinstance(output, dict) or not isinstance(expected, dict):
-        return 0.01
+        return _strict_score(0.01)
 
     predicted = str(output.get("response", "")).strip().lower()
     target = str(expected.get("response", "")).strip().lower()
 
     if not predicted:
-        return 0.01
+        return _strict_score(0.01)
     if predicted == target:
-        return 0.99
+        return _strict_score(0.99)
 
     partial_checks = [
         "thank" in predicted,
@@ -36,4 +36,4 @@ def grade(output: dict, expected: dict) -> float:
         len(predicted) >= 30,
     ]
     score = 0.5 if sum(partial_checks) >= 2 else 0.01
-    return _clamp(score)
+    return _strict_score(score)

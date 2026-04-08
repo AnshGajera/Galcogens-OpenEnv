@@ -26,14 +26,14 @@ def grade(output: dict, expected: dict) -> float:
     - invalid or missing prediction: ~0.01
     """
     if not isinstance(output, dict) or not isinstance(expected, dict):
-        return 0.01
+        return _strict_score(0.01)
 
     predicted = str(output.get("label", "")).strip().lower()
     target = str(expected.get("label", "")).strip().lower()
     valid = {"archive", "keep"}
 
     if predicted == target and predicted in valid:
-        return 0.99
+        return _strict_score(0.99)
     if predicted in valid and target in valid:
-        return 0.5
-    return 0.01
+        return _strict_score(0.5)
+    return _strict_score(0.01)
