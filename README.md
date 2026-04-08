@@ -131,7 +131,7 @@ python -c "from tasks import list_tasks; print([t['id'] for t in list_tasks()])"
 
 ```bash
 cd EmailTriage
-openenv push --repo-id YOUR_USERNAME/EmailTriage
+openenv push --repo-id OMCHOKSI108/Emailopenenvrl
 ```
 
 ## Project Structure

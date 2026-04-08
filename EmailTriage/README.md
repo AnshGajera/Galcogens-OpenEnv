@@ -4,9 +4,10 @@ emoji: 📬
 colorFrom: blue
 colorTo: green
 sdk: docker
+sdk_version: "24.1.0"
+python_version: "3.11"
+app_file: server/app.py
 pinned: false
-app_port: 8000
-base_path: /web
 tags:
   - openenv
   - rl
